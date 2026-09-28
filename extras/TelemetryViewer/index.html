@@ -1,0 +1,1482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AlfredoTelemetry</title>
+<!-- uPlot (MIT, https://github.com/leeoniya/uPlot) is loaded from this folder so the page works offline. -->
+<link rel="stylesheet" href="uPlot.min.css">
+<script src="uPlot.iife.min.js"></script>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11,11,11,0.10);
+  --wash: rgba(11,11,11,0.04);
+  --accent: #2a78d6;
+  --good: #0ca30c;
+  --warning: #d99a06;
+  --critical: #d03b3b;
+  --s0: #2a78d6; --s1: #eb6834; --s2: #1baf7a; --s3: #9b5de5;
+  --s4: #d03b3b; --s5: #b58b00; --s6: #0094b3; --s7: #d6479a;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --ink: #ffffff;
+    --ink-2: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255,255,255,0.10);
+    --wash: rgba(255,255,255,0.05);
+    --accent: #3987e5;
+    --s0: #3987e5; --s1: #f07b4b; --s2: #22c58b; --s3: #ad7bf0;
+    --s4: #e65c5c; --s5: #e0b92e; --s6: #2fb8d6; --s7: #ec6cb3;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d;
+  --surface: #1a1a19;
+  --ink: #ffffff;
+  --ink-2: #c3c2b7;
+  --muted: #898781;
+  --grid: #2c2c2a;
+  --axis: #383835;
+  --border: rgba(255,255,255,0.10);
+  --wash: rgba(255,255,255,0.05);
+  --accent: #3987e5;
+  --s0: #3987e5; --s1: #f07b4b; --s2: #22c58b; --s3: #ad7bf0;
+  --s4: #e65c5c; --s5: #e0b92e; --s6: #2fb8d6; --s7: #ec6cb3;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--page); color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+main { max-width: 1600px; margin: 0 auto; padding: 16px 16px 48px; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+h1 { font-size: 20px; font-weight: 600; margin: 0; }
+.brand { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+button, select, input {
+  font: inherit; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 6px; padding: 5px 9px;
+}
+button { cursor: pointer; white-space: nowrap; }
+button:hover:not(:disabled) { background: var(--wash); }
+button:disabled { opacity: 0.45; cursor: default; }
+button.primary { border-color: var(--accent); }
+button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.rec.on { background: var(--critical); border-color: var(--critical); }
+.controls {
+  display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: flex-end;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
+}
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field > .lbl { font-size: 12px; color: var(--ink-2); }
+.row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.status { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; color: var(--ink-2); }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.good { background: var(--good); }
+.dot.warn { background: var(--warning); }
+.dot.bad { background: var(--critical); }
+.dot.rec { background: var(--critical); animation: blink 1s steps(2) infinite; }
+@keyframes blink { 50% { opacity: 0.2; } }
+.banner {
+  margin-top: 12px; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--border);
+  background: var(--surface); display: none; gap: 12px; align-items: center; flex-wrap: wrap;
+}
+.banner.show { display: flex; }
+.banner .icon { font-weight: 700; color: var(--accent); }
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 12px; margin-top: 12px; align-items: start; }
+@media (max-width: 1000px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+.side { display: flex; flex-direction: column; gap: 12px; }
+.card h2 { font-size: 14px; font-weight: 600; margin: 0; }
+.card .head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.hint { font-size: 12px; color: var(--muted); margin: 0; }
+.plots { display: flex; flex-direction: column; gap: 12px; }
+.plot { padding-bottom: 4px; }
+.plot.active { border-color: var(--accent); }
+.plot .head { flex-wrap: wrap; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.chip {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 2px 4px 2px 8px;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--page);
+}
+.chip button { border: none; background: none; padding: 0 4px; color: var(--muted); line-height: 1; }
+.chip button:hover { color: var(--critical); background: none; }
+.swatch { width: 10px; height: 3px; border-radius: 2px; flex: none; }
+.plot select { font-size: 12px; padding: 2px 6px; }
+.plot .chart { width: 100%; min-height: 240px; }
+.empty { color: var(--muted); font-size: 13px; padding: 28px 8px; text-align: center; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--grid); font-variant-numeric: tabular-nums; }
+th { color: var(--ink-2); font-weight: 500; font-size: 12px; }
+td.num, th.num { text-align: right; white-space: nowrap; }
+#channels tr { cursor: pointer; }
+#channels tr:hover td { background: var(--wash); }
+#channels tr.inplot td:first-child { box-shadow: inset 3px 0 var(--accent); }
+.name { overflow-wrap: anywhere; }
+.scroll { max-height: 300px; overflow: auto; }
+.tunable { display: grid; grid-template-columns: minmax(0, 1fr) 120px; gap: 8px; align-items: center; padding: 3px 0; border-bottom: 1px solid var(--grid); }
+.tunable input[type="number"] { width: 120px; padding: 3px 6px; font-variant-numeric: tabular-nums; }
+.tunable input.pending { border-color: var(--warning); }
+.stats { display: grid; grid-template-columns: auto auto; gap: 2px 12px; font-size: 13px; }
+.stats span:nth-child(odd) { color: var(--ink-2); }
+.stats span:nth-child(even) { text-align: right; font-variant-numeric: tabular-nums; }
+#console {
+  font: 12px/1.4 ui-monospace, "Cascadia Mono", Consolas, monospace; height: 220px; overflow: auto;
+  background: var(--page); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+#console .t { color: var(--muted); }
+#console .sys { color: var(--muted); font-style: italic; }
+.recording { display: flex; align-items: center; gap: 6px; padding: 5px 0; border-bottom: 1px solid var(--grid); font-size: 13px; }
+.recording .info { flex: 1; min-width: 0; }
+.recording .info div:last-child { color: var(--muted); font-size: 12px; }
+.recording button { padding: 2px 7px; font-size: 12px; }
+.uplot { font-family: inherit; width: 100% !important; }
+.u-legend { color: var(--ink-2); font-size: 12px; text-align: left; }
+.u-legend .u-value { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.u-select { background: var(--wash); }
+kbd { font: 11px ui-monospace, Consolas, monospace; border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="brand">
+      <h1>AlfredoTelemetry</h1>
+      <span class="status"><span class="dot" id="dongleDot"></span><span id="dongleText">No dongle</span></span>
+      <span class="status"><span class="dot" id="robotDot"></span><span id="robotText">No robot</span></span>
+    </div>
+    <button id="theme" title="Switch theme">Theme: auto</button>
+  </header>
+
+  <section class="controls" aria-label="Controls">
+    <div class="field">
+      <span class="lbl">Dongle</span>
+      <div class="row">
+        <button id="connect" class="primary">Connect</button>
+        <select id="baud" title="Only matters for dongles with a USB-to-UART chip">
+          <option value="115200">115200</option>
+          <option value="921600" selected>921600</option>
+          <option value="2000000">2000000</option>
+        </select>
+        <select id="wifiChannel" title="Wi-Fi channel (must match the robot)"></select>
+      </div>
+    </div>
+    <div class="field">
+      <span class="lbl">Robot</span>
+      <div class="row">
+        <select id="robotSelect" style="min-width: 190px"><option value="">Searching...</option></select>
+        <button id="pair" disabled>Pair</button>
+        <button id="takeover" hidden title="Pair anyway; the other computer stops getting data">Take over</button>
+      </div>
+    </div>
+    <div class="field">
+      <span class="lbl">Stream <kbd>Space</kbd></span>
+      <div class="row">
+        <button id="stream" disabled>Start</button>
+      </div>
+    </div>
+    <div class="field">
+      <span class="lbl">Record <kbd>R</kbd></span>
+      <div class="row">
+        <button id="record" class="rec" disabled>Record</button>
+        <span class="status" id="recInfo"></span>
+      </div>
+    </div>
+    <div class="field">
+      <span class="lbl">View <kbd>P</kbd></span>
+      <div class="row">
+        <select id="window" title="Time window">
+          <option value="1">1 s</option>
+          <option value="2">2 s</option>
+          <option value="5">5 s</option>
+          <option value="10" selected>10 s</option>
+          <option value="30">30 s</option>
+          <option value="60">60 s</option>
+          <option value="120">120 s</option>
+        </select>
+        <button id="pause">Pause</button>
+        <button id="clear" title="Clear the live buffer">Clear</button>
+      </div>
+    </div>
+    <div class="field">
+      <span class="lbl">Files</span>
+      <div class="row">
+        <button id="saveBuffer" title="Save the last 2 minutes of live data as CSV">Save buffer</button>
+        <button id="openCsv">Open CSV</button>
+        <input type="file" id="csvFile" accept=".csv,text/csv" hidden>
+      </div>
+    </div>
+  </section>
+
+  <div class="banner" id="banner" role="status">
+    <span class="icon" aria-hidden="true">i</span>
+    <div id="bannerText" style="flex: 1"></div>
+    <button id="bannerButton" hidden></button>
+  </div>
+
+  <div class="layout">
+    <div>
+      <section class="card" id="intro">
+        <h2>Getting started</h2>
+        <ol class="hint" style="margin: 6px 0 4px; padding-left: 18px; line-height: 1.7">
+          <li>Flash the <b>Dongle</b> example to an ESP32 on this computer (for full speed, an S2 or S3 with <i>USB CDC On Boot</i> enabled).</li>
+          <li>On the robot: <code>Telemetry.begin("MyRobot");</code> in <code>setup()</code>, and <code>Telemetry.add("name", value);</code> wherever you like.</li>
+          <li>Click <b>Connect</b> and pick the dongle's port, then pick your robot and click <b>Pair</b>. After that, the page pairs with that robot again on its own.</li>
+        </ol>
+      </section>
+      <div class="plots" id="plots"></div>
+      <div class="row" style="margin-top: 12px">
+        <button id="addPlot">Add plot</button>
+        <span class="hint">Click a plot to select it, then click channels on the right to add or remove them. Drag across a plot to zoom; double-click to go back.</span>
+      </div>
+    </div>
+
+    <aside class="side">
+      <section class="card">
+        <div class="head"><h2>Channels</h2><span class="hint" id="channelCount"></span></div>
+        <div class="scroll">
+          <table>
+            <thead><tr><th>Name</th><th class="num">Value</th><th class="num">Hz</th></tr></thead>
+            <tbody id="channels"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="head"><h2>Tunables</h2><span class="hint">Enter to send</span></div>
+        <div id="tunables"><p class="hint">Use Telemetry.tune() on the robot to edit variables here.</p></div>
+      </section>
+
+      <section class="card">
+        <div class="head"><h2>Recordings</h2></div>
+        <div id="recordings"><p class="hint">Recordings stay in this tab until you close it. Save the ones you want to keep.</p></div>
+      </section>
+
+      <section class="card">
+        <div class="head"><h2>Link</h2></div>
+        <div class="stats" id="stats"></div>
+      </section>
+
+      <section class="card">
+        <div class="head">
+          <h2>Console</h2>
+          <div class="row"><button id="clearConsole" style="padding: 2px 7px; font-size: 12px">Clear</button></div>
+        </div>
+        <div id="console"></div>
+      </section>
+    </aside>
+  </div>
+</main>
+
+<script>
+"use strict";
+
+// ---------------------------------------------------------------- protocol
+// Mirrors src/AlfredoTelemetryProtocol.h
+
+const MAGIC = 0xA7;
+const PKT_HELLO = 0x01, PKT_STATUS = 0x02, PKT_SCHEMA = 0x03, PKT_DATA = 0x04, PKT_TEXT = 0x05, PKT_TUNABLES = 0x06;
+const PKT_REQUEST = 0x12, PKT_SET_TUNABLE = 0x13;
+const REQUEST_SCHEMA = 0x01, REQUEST_TUNABLES = 0x02;
+const TYPE_FLOAT = 0, TYPE_INT = 1, TYPE_UINT = 2, TYPE_BOOL = 3;
+const SER_SEEN = 0x81, SER_PACKET = 0x82, SER_STATUS = 0x83, SER_LOG = 0x84;
+const SER_PONG = 0x01, SER_CONNECT = 0x02, SER_STREAM = 0x03, SER_FORWARD = 0x04, SER_CHANNEL = 0x05;
+const DONGLE_IDLE = 0, DONGLE_CONNECTING = 1, DONGLE_LINKED = 2, DONGLE_BUSY = 3;
+const HELLO_PAIRED = 0x01, CONNECT_TAKEOVER = 0x01;
+
+const LIVE_BUFFER_S = 120;     // seconds of live data kept for plotting and "Save buffer"
+const ROBOT_STALE_MS = 3000;   // a robot not heard from for this long leaves the list
+const STORE = "alfredo-telemetry.";
+
+// ---------------------------------------------------------------- helpers
+
+const $ = id => document.getElementById(id);
+const decoder = new TextDecoder();
+function store(key, val) { try { localStorage.setItem(STORE + key, JSON.stringify(val)); } catch (e) {} }
+function recall(key) { try { return JSON.parse(localStorage.getItem(STORE + key)); } catch (e) { return null; } }
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function macString(bytes) { return Array.from(bytes, b => b.toString(16).padStart(2, "0")).join(":"); }
+function macBytes(str) { return new Uint8Array(str.split(":").map(h => parseInt(h, 16))); }
+function el(tag, props = {}, ...children) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === "class") e.className = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else if (k === "style") e.style.cssText = v;
+    else e[k] = v;
+  }
+  for (const c of children) e.append(c);
+  return e;
+}
+function lowerBound(arr, x, n) {
+  let lo = 0, hi = n;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] < x) lo = m + 1; else hi = m; }
+  return lo;
+}
+function formatValue(v) {
+  if (v === undefined || v !== v) return "";
+  if (Number.isInteger(v)) return String(v);
+  const a = Math.abs(v);
+  if (a < 1e-9) return "0";
+  if (a < 1e-3 || a >= 1e6) return v.toExponential(2);
+  return v.toFixed(a < 10 ? 4 : a < 1000 ? 2 : 1);
+}
+function formatDuration(s) {
+  const m = Math.floor(s / 60);
+  return (m ? m + ":" + (s % 60).toFixed(1).padStart(4, "0") : (s % 60).toFixed(1) + " s");
+}
+function formatBytes(n) {
+  return n < 1024 ? n + " B" : n < 1048576 ? (n / 1024).toFixed(1) + " KB" : (n / 1048576).toFixed(1) + " MB";
+}
+function timestampName() {
+  const d = new Date(), p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+}
+
+const CRC_TABLE = (() => {
+  const t = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let b = 0; b < 8; b++) c = (c & 0x80) ? ((c << 1) ^ 0x07) & 0xFF : (c << 1) & 0xFF;
+    t[i] = c;
+  }
+  return t;
+})();
+function crc8(bytes) { let c = 0; for (const b of bytes) c = CRC_TABLE[c ^ b]; return c; }
+
+function cobsEncode(src) {
+  const out = new Uint8Array(src.length + Math.ceil(src.length / 254) + 2);
+  let codeIndex = 0, pos = 1, code = 1;
+  for (const b of src) {
+    if (b !== 0) { out[pos++] = b; code++; }
+    if (b === 0 || code === 0xFF) { out[codeIndex] = code; codeIndex = pos++; code = 1; }
+  }
+  out[codeIndex] = code;
+  out[pos++] = 0;
+  return out.subarray(0, pos);
+}
+function cobsDecode(buf, length) {
+  const out = new Uint8Array(length);
+  let r = 0, w = 0;
+  while (r < length) {
+    const code = buf[r++];
+    if (code === 0) return null;
+    for (let i = 1; i < code; i++) { if (r >= length) return null; out[w++] = buf[r++]; }
+    if (code !== 0xFF && r < length) out[w++] = 0;
+  }
+  return out.subarray(0, w);
+}
+
+// ---------------------------------------------------------------- data tables
+// Rows are frames (one timestamp each); columns are channels by name, NaN where a
+// frame has no value. Columns are keyed by name so a robot reboot (which may
+// renumber channels) keeps the same columns.
+
+class Table {
+  constructor() {
+    this.n = 0;
+    this.cap = 1024;
+    this.t = new Float64Array(this.cap);
+    this.cols = new Map();
+    this.types = new Map();
+    this.skipped = 0;
+  }
+  column(name, type) {
+    let c = this.cols.get(name);
+    if (!c) {
+      c = { name, data: new Float64Array(this.cap).fill(NaN) };
+      this.cols.set(name, c);
+      if (type !== undefined) this.types.set(name, type);
+    }
+    return c;
+  }
+  grow() {
+    const cap = this.cap * 2;
+    const t = new Float64Array(cap);
+    t.set(this.t.subarray(0, this.n));
+    this.t = t;
+    for (const c of this.cols.values()) {
+      const d = new Float64Array(cap).fill(NaN);
+      d.set(c.data.subarray(0, this.n));
+      c.data = d;
+    }
+    this.cap = cap;
+  }
+  // Index of the row for time t. Frames from different robot tasks can arrive a
+  // little out of order, and a frame split over two packets repeats its time.
+  row(t) {
+    const n = this.n;
+    if (n === 0 || t > this.t[n - 1]) {
+      if (n >= this.cap) this.grow();
+      this.t[n] = t;
+      return this.n++;
+    }
+    const limit = Math.max(0, n - 512);
+    let k = n - 1;
+    while (k >= limit && this.t[k] > t) k--;
+    if (k >= limit && this.t[k] === t) return k;
+    if (k < limit && k >= 0) { this.skipped++; return -1; }  // far out of order
+    if (n >= this.cap) this.grow();
+    const at = k + 1;
+    this.t.copyWithin(at + 1, at, n);
+    this.t[at] = t;
+    for (const c of this.cols.values()) { c.data.copyWithin(at + 1, at, n); c.data[at] = NaN; }
+    this.n++;
+    return at;
+  }
+  trimBefore(tMin) {
+    const k = lowerBound(this.t, tMin, this.n);
+    if (k <= 0) return;
+    const n = this.n;
+    this.t.copyWithin(0, k, n);
+    for (const c of this.cols.values()) { c.data.copyWithin(0, k, n); c.data.fill(NaN, n - k, n); }
+    this.n = n - k;
+  }
+  clear() { this.n = 0; for (const c of this.cols.values()) c.data.fill(NaN); }
+  get start() { return this.n ? this.t[0] : 0; }
+  get end() { return this.n ? this.t[this.n - 1] : 0; }
+  get bytes() { return this.cap * 8 * (this.cols.size + 1); }
+}
+
+// ---------------------------------------------------------------- state
+
+const S = {
+  port: null, reader: null, writer: null, writeChain: Promise.resolve(),
+  rx: new Uint8Array(8192), rxLength: 0, rxOverflow: false,
+  dongle: null,                   // last STATUS from the dongle
+  robots: new Map(),              // mac string -> { name, rssi, lastSeen }
+  robot: null,                    // { mac, name, status, seq, rssi }
+  schema: [],                     // channel id -> { name, type }
+  schemaPending: null,
+  lastSchemaRequest: 0,
+  tunables: [],                   // id -> { name, type, value }
+  tunablesVersion: -1,
+  wantStream: true,
+  clock: { refRaw: null, refUs: 0, lastUs: null, lastHostMs: 0, reset: false },
+  live: new Table(),
+  rec: null,                      // { table, name, startedMs }
+  recordings: [],
+  view: { mode: "live", paused: false, windowS: 10, zoom: null, dataset: null },
+  plots: [],
+  activePlot: null,
+  colors: new Map(),
+  channelOrder: [],               // names in the order the robot first sent them
+  channelStats: new Map(),        // name -> { value, count, hz }
+  stats: { packets: 0, bytes: 0, lost: 0, crcErrors: 0, pps: 0, bps: 0, lossPct: 0, rssi: null, lastPackets: 0, lastBytes: 0, lastLost: 0 },
+  dirty: false,        // new data arrived
+  viewDirty: true,     // the view changed (zoom, plots, theme, ...)
+};
+
+// ---------------------------------------------------------------- serial link
+
+async function connectDongle() {
+  if (!("serial" in navigator)) return;
+  if (S.port) { await disconnectDongle(); return; }
+  let port;
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: Number($("baud").value), bufferSize: 1 << 16 });
+  } catch (e) {
+    if (e.name !== "NotFoundError") systemLine("Could not open the port: " + e.message);
+    return;
+  }
+  // DTR on, RTS off: native USB boards only send while DTR is set, and this
+  // combination never resets a board through its auto-reset circuit.
+  try { await port.setSignals({ dataTerminalReady: true, requestToSend: false }); } catch (e) {}
+  S.port = port;
+  S.writer = port.writable.getWriter();
+  S.rxLength = 0;
+  systemLine("Dongle connected");
+  updateHeader();
+  readLoop(port);
+}
+
+async function disconnectDongle() {
+  const port = S.port;
+  if (!port) return;
+  S.port = null;
+  try { if (S.reader) await S.reader.cancel(); } catch (e) {}
+  try { S.writer.releaseLock(); } catch (e) {}
+  try { await port.close(); } catch (e) {}
+  S.writer = null;
+  S.dongle = null;
+  S.robot = null;
+  S.robots.clear();
+  systemLine("Dongle disconnected");
+  updateHeader();
+  renderRobotSelect();
+}
+
+async function readLoop(port) {
+  while (port.readable && S.port === port) {
+    S.reader = port.readable.getReader();
+    try {
+      while (true) {
+        const { value, done } = await S.reader.read();
+        if (done) break;
+        feed(value);
+      }
+    } catch (e) {
+      if (S.port === port) systemLine("Serial read error: " + e.message);
+    } finally {
+      S.reader.releaseLock();
+      S.reader = null;
+    }
+  }
+  if (S.port === port) disconnectDongle();
+}
+
+function feed(chunk) {
+  for (let i = 0; i < chunk.length; i++) {
+    const b = chunk[i];
+    if (b === 0) {
+      if (!S.rxOverflow && S.rxLength > 0) handleFrame(cobsDecode(S.rx, S.rxLength));
+      S.rxLength = 0;
+      S.rxOverflow = false;
+    } else if (S.rxLength < S.rx.length) {
+      S.rx[S.rxLength++] = b;
+    } else {
+      S.rxOverflow = true;
+    }
+  }
+}
+
+function sendFrame(type, payload = []) {
+  if (!S.writer) return;
+  const body = new Uint8Array(payload.length + 2);
+  body[0] = type;
+  body.set(payload, 1);
+  body[body.length - 1] = crc8(body.subarray(0, body.length - 1));
+  const frame = cobsEncode(body);
+  const writer = S.writer;
+  S.writeChain = S.writeChain.then(() => writer.write(frame)).catch(() => {});
+}
+
+function forward(packetType, payload = []) { sendFrame(SER_FORWARD, [packetType, ...payload]); }
+
+function handleFrame(f) {
+  if (!f || f.length < 2 || crc8(f.subarray(0, f.length - 1)) !== f[f.length - 1]) { S.stats.crcErrors++; return; }
+  const type = f[0];
+  const p = f.subarray(1, f.length - 1);
+  if (type === SER_STATUS) handleDongleStatus(p);
+  else if (type === SER_SEEN) handleSeen(p);
+  else if (type === SER_PACKET) handleRobotPacket(p);
+  else if (type === SER_LOG) systemLine("Dongle: " + decoder.decode(p));
+}
+
+// ---------------------------------------------------------------- dongle and pairing
+
+function handleDongleStatus(p) {
+  if (p.length < 30) return;
+  const v = new DataView(p.buffer, p.byteOffset, p.byteLength);
+  const first = S.dongle === null;
+  S.dongle = {
+    protocol: p[0], channel: p[1], state: p[2], target: macString(p.subarray(3, 9)),
+    rxPackets: v.getUint32(9, true), rxDropped: v.getUint32(13, true), txFailures: v.getUint32(17, true),
+    maxPayload: v.getUint16(21, true), mac: macString(p.subarray(23, 29)), stream: p[29] !== 0,
+  };
+  sendFrame(SER_PONG);
+  if (first) {
+    $("wifiChannel").value = S.dongle.channel;
+    // The dongle may still be paired from before the page was reloaded.
+    if (S.dongle.state !== DONGLE_IDLE && !S.robot) adoptRobot(S.dongle.target, S.robots.get(S.dongle.target)?.name || "");
+    if (S.robot) sendFrame(SER_STREAM, [S.wantStream ? 1 : 0]);
+  }
+  if (S.robot && S.dongle.state === DONGLE_IDLE && performance.now() - S.robot.pairedAt > 1500) S.robot = null;
+  updateHeader();
+}
+
+function handleSeen(p) {
+  if (p.length < 7 + 4 + 5) return;
+  const mac = macString(p.subarray(0, 6));
+  const rssi = (p[6] << 24) >> 24;
+  const hello = p.subarray(7);
+  if (hello[0] !== MAGIC || hello[1] !== PKT_HELLO) return;
+  const body = hello.subarray(4);
+  const name = decoder.decode(body.subarray(5, 5 + body[4]));
+  const macAt = 5 + body[4];
+  const paired = (body[1] & HELLO_PAIRED) !== 0;
+  const pairedWith = paired && body.length >= macAt + 6 ? macString(body.subarray(macAt, macAt + 6)) : null;
+  const known = S.robots.get(mac);
+  S.robots.set(mac, { name, rssi, paired, pairedWith, lastSeen: performance.now() });
+  if (!known || known.name !== name || known.paired !== paired || known.pairedWith !== pairedWith) renderRobotSelect();
+
+  if (S.robot && S.robot.mac === mac && !paired) {
+    // Our robot is looking for a dongle again: it reset or timed out. The
+    // dongle re-pairs on its own; channel numbers may change, so drop the schema.
+    S.robot.name = name;
+    S.schema = [];
+    S.schemaPending = null;
+    S.tunablesVersion = -1;
+    S.clock.reset = true;
+  }
+  autoPair();
+}
+
+// Pairs again with the robot this page was last paired with (by mac, so
+// robots with the same name aren't mixed up). A new robot always takes a
+// click, so a page never grabs someone else's robot on its own. If that robot
+// is in use by another computer, the dongle waits until it's free.
+function autoPair() {
+  if (!S.dongle || S.robot || S.dongle.state !== DONGLE_IDLE) return;
+  const last = recall("lastRobotMac");
+  const r = last && S.robots.get(last);
+  if (r && performance.now() - r.lastSeen < ROBOT_STALE_MS) pairRobot(last);
+}
+
+function pairRobot(mac, takeover = false) {
+  const r = S.robots.get(mac);
+  if (!S.robot || S.robot.mac !== mac) adoptRobot(mac, r ? r.name : "");
+  sendFrame(SER_CONNECT, [...macBytes(mac), takeover ? CONNECT_TAKEOVER : 0]);
+  sendFrame(SER_STREAM, [S.wantStream ? 1 : 0]);
+  systemLine((takeover ? "Taking over " : "Pairing with ") + (r ? r.name : mac));
+}
+
+function takeOver() {
+  const name = S.robot.name || S.robot.mac;
+  if (!confirm(`Take over ${name} from the other computer? It will stop getting data.`)) return;
+  pairRobot(S.robot.mac, true);
+}
+
+function unpairRobot() {
+  sendFrame(SER_CONNECT, new Uint8Array(7));
+  S.robot = null;
+  store("lastRobotMac", "");
+  updateHeader();
+  renderRobotSelect();
+}
+
+function adoptRobot(mac, name) {
+  // A different robot than last time starts with fresh data.
+  if (S.lastRobotMac && S.lastRobotMac !== mac) {
+    if (S.rec) toggleRecording();
+    S.live = new Table();
+    S.channelOrder = [];
+    S.channelStats.clear();
+    S.layoutFor = null;
+    renderChannels(true);
+  }
+  S.lastRobotMac = mac;
+  store("lastRobotMac", mac);
+  S.robot = { mac, name, status: null, seq: null, rssi: null, lastPacket: 0, pairedAt: performance.now() };
+  S.schema = [];
+  S.schemaPending = null;
+  S.tunables = [];
+  S.tunablesVersion = -1;
+  S.clock.reset = true;
+  renderTunables();
+  if (name) robotNamed(name);
+  updateHeader();
+}
+
+// Called once the robot's name is known: show its saved plot layout.
+function robotNamed(name) {
+  if (S.layoutFor !== name) loadLayout(name);
+  S.layoutFor = name;
+}
+
+function setStream(on) {
+  S.wantStream = on;
+  sendFrame(SER_STREAM, [on ? 1 : 0]);
+  updateHeader();
+}
+
+// ---------------------------------------------------------------- robot packets
+
+function handleRobotPacket(p) {
+  if (!S.robot || p.length < 5) return;
+  const rssi = (p[0] << 24) >> 24;
+  const pkt = p.subarray(1);
+  if (pkt[0] !== MAGIC) return;
+  const type = pkt[1];
+  const seq = pkt[2] | (pkt[3] << 8);
+  const body = pkt.subarray(4);
+  const v = new DataView(body.buffer, body.byteOffset, body.byteLength);
+
+  const r = S.robot;
+  if (r.seq !== null) {
+    const gap = (seq - r.seq - 1) & 0xFFFF;
+    if (gap > 0 && gap < 1000) S.stats.lost += gap;   // bigger jumps are a robot reset
+  }
+  r.seq = seq;
+  r.rssi = rssi;
+  r.lastPacket = performance.now();
+  S.stats.rssi = rssi;
+  S.stats.packets++;
+  S.stats.bytes += pkt.length;
+
+  if (type === PKT_STATUS) handleStatus(body, v);
+  else if (type === PKT_SCHEMA) handleSchema(body, v);
+  else if (type === PKT_DATA) handleData(body, v);
+  else if (type === PKT_TEXT) handleText(body);
+  else if (type === PKT_TUNABLES) handleTunables(body, v);
+}
+
+function handleStatus(b, v) {
+  if (b.length < 27) return;
+  const s = {
+    schemaVersion: v.getUint16(0, true), tunablesVersion: v.getUint16(2, true), uptimeMs: v.getUint32(4, true),
+    framesSent: v.getUint32(8, true), framesDropped: v.getUint32(12, true), txFailures: v.getUint32(16, true),
+    streaming: b[20] !== 0, bufferUse: b[21], payload: v.getUint16(22, true),
+    channels: b[24], tunables: b[25], name: decoder.decode(b.subarray(27, 27 + b[26])),
+  };
+  const r = S.robot;
+  if (r.status && s.uptimeMs < r.status.uptimeMs) S.clock.reset = true;  // rebooted
+  if (s.name && s.name !== r.name) {
+    const wasUnnamed = !r.name;
+    r.name = s.name;
+    if (wasUnnamed) robotNamed(s.name);
+  }
+  r.status = s;
+  if (s.channels > S.schema.filter(Boolean).length) requestSchema();
+  if (s.tunablesVersion !== S.tunablesVersion && (s.tunables > 0 || S.tunables.length)) forward(PKT_REQUEST, [REQUEST_TUNABLES]);
+  updateHeader();
+}
+
+function requestSchema() {
+  const now = performance.now();
+  if (now - S.lastSchemaRequest < 300) return;
+  S.lastSchemaRequest = now;
+  forward(PKT_REQUEST, [REQUEST_SCHEMA]);
+}
+
+// A schema can span several packets; channels are only ever added, so each
+// entry is usable as soon as it arrives.
+function handleSchema(b, v) {
+  if (b.length < 3) return;
+  const count = b[2];
+  let p = 3;
+  while (p + 3 <= b.length) {
+    const id = b[p], type = b[p + 1], len = b[p + 2];
+    const name = decoder.decode(b.subarray(p + 3, p + 3 + len));
+    p += 3 + len;
+    S.schema[id] = { name, type };
+    if (!S.channelOrder.includes(name)) { S.channelOrder.push(name); colorFor(name); }
+    S.live.column(name, type);
+    if (S.rec) S.rec.table.column(name, type);
+  }
+  S.schema.length = Math.min(S.schema.length, count);
+  if (S.plots.length === 0) autoLayout();
+  renderChannels(true);
+}
+
+function handleData(b, v) {
+  const schema = S.schema, live = S.live, rec = S.rec ? S.rec.table : null;
+  let p = 2, unknown = false;
+  while (p + 5 <= b.length) {
+    const raw = v.getUint32(p, true);
+    const n = b[p + 4];
+    p += 5;
+    if (p + n * 5 > b.length) break;
+    const t = mapTime(raw);
+    const rowL = live.row(t);
+    const rowR = rec ? rec.row(t) : -1;
+    for (let i = 0; i < n; i++, p += 5) {
+      const ch = schema[b[p]];
+      if (!ch) { unknown = true; continue; }
+      let value;
+      switch (ch.type) {
+        case TYPE_FLOAT: value = v.getFloat32(p + 1, true); break;
+        case TYPE_INT: value = v.getInt32(p + 1, true); break;
+        case TYPE_UINT: value = v.getUint32(p + 1, true); break;
+        default: value = v.getUint32(p + 1, true) ? 1 : 0;
+      }
+      if (rowL >= 0) live.column(ch.name, ch.type).data[rowL] = value;
+      if (rowR >= 0) rec.column(ch.name, ch.type).data[rowR] = value;
+      let cs = S.channelStats.get(ch.name);
+      if (!cs) { cs = { value, count: 0, hz: 0 }; S.channelStats.set(ch.name, cs); }
+      cs.value = value;
+      cs.count++;
+    }
+  }
+  if (unknown) requestSchema();
+  if (live.end - live.start > LIVE_BUFFER_S * 1.1) live.trimBefore(live.end - LIVE_BUFFER_S);
+  S.dirty = true;
+}
+
+// Turns the robot's 32-bit microsecond clock into seconds on one continuous
+// axis, across wraparound (every 71 minutes) and robot resets.
+function mapTime(raw) {
+  const c = S.clock;
+  if (c.refRaw === null || c.reset) {
+    const gapUs = c.lastUs === null ? 0 : Math.max(0, (performance.now() - c.lastHostMs) * 1000);
+    c.refRaw = raw;
+    c.refUs = c.lastUs === null ? 0 : c.lastUs + gapUs;
+    c.reset = false;
+  }
+  const d = (raw - c.refRaw) | 0;
+  if (d < -5e6 || d > 60e6) { c.reset = true; return mapTime(raw); }
+  const us = c.refUs + d;
+  if (d > 0) { c.refRaw = raw; c.refUs = us; }
+  if (c.lastUs === null || us > c.lastUs) { c.lastUs = us; c.lastHostMs = performance.now(); }
+  return us / 1e6;
+}
+
+function handleText(b) {
+  const lines = decoder.decode(b).split("\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  for (const line of lines) consoleLine(line, false);
+}
+
+function handleTunables(b, v) {
+  if (b.length < 3) return;
+  const version = v.getUint16(0, true), count = b[2];
+  let p = 3, changed = S.tunables.length !== count;
+  while (p + 7 <= b.length) {
+    const id = b[p], type = b[p + 1];
+    let value;
+    if (type === TYPE_FLOAT) value = v.getFloat32(p + 2, true);
+    else if (type === TYPE_UINT) value = v.getUint32(p + 2, true);
+    else value = v.getInt32(p + 2, true);
+    const len = b[p + 6];
+    const name = decoder.decode(b.subarray(p + 7, p + 7 + len));
+    p += 7 + len;
+    const t = S.tunables[id];
+    if (t && t.name === name && t.type === type) t.value = value;
+    else { S.tunables[id] = { id, name, type, value }; changed = true; }
+  }
+  S.tunables.length = count;
+  S.tunablesVersion = version;
+  if (changed) renderTunables(); else updateTunableValues();
+}
+
+function setTunable(t, value) {
+  const bytes = new Uint8Array(5);
+  const v = new DataView(bytes.buffer);
+  bytes[0] = t.id;
+  if (t.type === TYPE_FLOAT) v.setFloat32(1, value, true);
+  else if (t.type === TYPE_UINT) v.setUint32(1, Math.max(0, Math.round(value)), true);
+  else v.setInt32(1, Math.round(value), true);
+  forward(PKT_SET_TUNABLE, bytes);
+}
+
+// ---------------------------------------------------------------- recording and files
+
+function toggleRecording() {
+  if (S.rec) {
+    const r = S.rec;
+    S.rec = null;
+    if (r.table.n > 0) {
+      S.recordings.unshift({ name: r.name, table: r.table, order: [...S.channelOrder] });
+      systemLine(`Recorded ${r.table.n.toLocaleString()} rows (${formatDuration(r.table.end - r.table.start)})`);
+    }
+    renderRecordings();
+  } else {
+    if (!S.robot) return;
+    S.rec = { table: new Table(), name: `${S.robot.name || "robot"}_${timestampName()}`, startedMs: performance.now() };
+    for (const ch of S.schema) if (ch) S.rec.table.column(ch.name, ch.type);
+    if (!S.wantStream) setStream(true);
+  }
+  updateHeader();
+}
+
+function csvCell(s) { return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }
+
+function tableToCsvBlob(table, order) {
+  const names = [...order.filter(n => table.cols.has(n)), ...[...table.cols.keys()].filter(n => !order.includes(n))];
+  const cols = names.map(n => table.cols.get(n).data);
+  const ints = names.map(n => { const t = table.types.get(n); return t === TYPE_INT || t === TYPE_UINT || t === TYPE_BOOL; });
+  const parts = ["time_s," + names.map(csvCell).join(",") + "\n"];
+  const t0 = table.start;
+  let chunk = [];
+  for (let i = 0; i < table.n; i++) {
+    let line = (table.t[i] - t0).toFixed(6);
+    for (let c = 0; c < cols.length; c++) {
+      const v = cols[c][i];
+      line += ",";
+      if (v === v) line += ints[c] ? String(v) : String(+v.toPrecision(7));
+    }
+    chunk.push(line);
+    if (chunk.length === 5000) { parts.push(chunk.join("\n") + "\n"); chunk = []; }
+  }
+  if (chunk.length) parts.push(chunk.join("\n") + "\n");
+  return new Blob(parts, { type: "text/csv" });
+}
+
+function download(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = el("a", { href: url, download: filename });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+function saveBuffer() {
+  if (S.live.n === 0) { systemLine("Nothing to save yet"); return; }
+  download(tableToCsvBlob(S.live, S.channelOrder), `${S.robot?.name || "robot"}_buffer_${timestampName()}.csv`);
+}
+
+async function openCsv(file) {
+  const text = await file.text();
+  const lines = text.split(/\r?\n/);
+  if (lines.length < 2) return;
+  const header = splitCsvLine(lines[0]);
+  const table = new Table();
+  const cols = header.slice(1).map(n => table.column(n));
+  for (let i = 1; i < lines.length; i++) {
+    if (!lines[i]) continue;
+    const cells = lines[i].split(",");
+    const t = parseFloat(cells[0]);
+    if (!(t === t)) continue;
+    const row = table.row(t);
+    if (row < 0) continue;
+    for (let c = 0; c < cols.length; c++) {
+      const s = cells[c + 1];
+      if (s !== undefined && s !== "") cols[c].data[row] = parseFloat(s);
+    }
+  }
+  for (const n of header.slice(1)) colorFor(n);
+  const rec = { name: file.name.replace(/\.csv$/i, ""), table, order: header.slice(1) };
+  S.recordings.unshift(rec);
+  renderRecordings();
+  review(rec);
+}
+
+function splitCsvLine(line) {
+  const out = [];
+  let cur = "", quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (quoted) {
+      if (c === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+      else if (c === '"') quoted = false;
+      else cur += c;
+    } else if (c === '"') quoted = true;
+    else if (c === ",") { out.push(cur); cur = ""; }
+    else cur += c;
+  }
+  out.push(cur);
+  return out;
+}
+
+function review(rec) {
+  S.view.mode = "review";
+  S.view.dataset = rec;
+  S.view.zoom = null;
+  if (S.plots.every(p => p.channels.every(n => !rec.table.cols.has(n)))) {
+    // None of the current plots show anything from this file.
+    clearPlots();
+    for (const n of rec.order.slice(0, 3)) addPlot([n]);
+  }
+  showBanner(`Viewing <b>${rec.name}</b>: ${rec.table.n.toLocaleString()} rows, ${formatDuration(rec.table.end - rec.table.start)}. Drag to zoom, double-click to zoom out.`, "Back to live", backToLive);
+  renderChannels(true);
+  S.viewDirty = true;
+}
+
+function backToLive() {
+  S.view.mode = "live";
+  S.view.dataset = null;
+  S.view.zoom = null;
+  S.view.paused = false;
+  hideBanner();
+  renderChannels(true);
+  updateHeader();
+  S.viewDirty = true;
+}
+
+// ---------------------------------------------------------------- plots
+
+function colorFor(name) {
+  if (!S.colors.has(name)) S.colors.set(name, S.colors.size % 8);
+  return cssVar("--s" + S.colors.get(name));
+}
+
+function currentTable() { return S.view.mode === "review" ? S.view.dataset.table : S.live; }
+
+function currentRange() {
+  const table = currentTable();
+  if (S.view.zoom) return S.view.zoom;
+  if (S.view.mode === "review") return [table.start, Math.max(table.end, table.start + 1e-3)];
+  const end = Math.max(table.end, S.view.windowS);
+  return [end - S.view.windowS, end];
+}
+
+function addPlot(channels = []) {
+  const plot = { channels: [...channels], card: null, chart: null, u: null };
+  plot.card = el("section", { class: "card plot", onpointerdown: () => setActivePlot(plot) });
+  plot.head = el("div", { class: "head" });
+  plot.chart = el("div", { class: "chart" });
+  plot.card.append(plot.head, plot.chart);
+  $("plots").append(plot.card);
+  S.plots.push(plot);
+  $("intro").hidden = true;
+  setActivePlot(plot);
+  buildPlot(plot);
+  saveLayout();
+  return plot;
+}
+
+function removePlot(plot) {
+  if (plot.u) plot.u.destroy();
+  plot.card.remove();
+  S.plots = S.plots.filter(p => p !== plot);
+  if (S.activePlot === plot) setActivePlot(S.plots[S.plots.length - 1] || null);
+  saveLayout();
+}
+
+function clearPlots() {
+  for (const p of S.plots) { if (p.u) p.u.destroy(); p.card.remove(); }
+  S.plots = [];
+  S.activePlot = null;
+}
+
+function setActivePlot(plot) {
+  S.activePlot = plot;
+  for (const p of S.plots) p.card.classList.toggle("active", p === plot && S.plots.length > 1);
+  renderChannels(true);
+}
+
+function toggleChannel(plot, name) {
+  const i = plot.channels.indexOf(name);
+  if (i >= 0) plot.channels.splice(i, 1); else plot.channels.push(name);
+  buildPlot(plot);
+  saveLayout();
+  renderChannels(true);
+}
+
+function buildPlot(plot) {
+  // Header: a chip per channel, an add menu, and a remove button
+  const chips = el("div", { class: "chips" });
+  for (const name of plot.channels) {
+    chips.append(el("span", { class: "chip" },
+      el("span", { class: "swatch", style: `background:${colorFor(name)}` }), name,
+      el("button", { title: "Remove", textContent: "×", onclick: () => toggleChannel(plot, name) })));
+  }
+  const menu = el("select", { title: "Add a channel", onchange: e => { if (e.target.value) toggleChannel(plot, e.target.value); } });
+  menu.append(el("option", { value: "", textContent: "+ channel" }));
+  const available = S.view.mode === "review" ? S.view.dataset.order : S.channelOrder;
+  for (const n of available) if (!plot.channels.includes(n)) menu.append(el("option", { value: n, textContent: n }));
+  chips.append(menu);
+  plot.head.replaceChildren(chips, el("button", { title: "Remove plot", textContent: "Remove", style: "font-size:12px;padding:2px 7px", onclick: () => removePlot(plot) }));
+
+  if (plot.u) { plot.u.destroy(); plot.u = null; }
+  plot.chart.replaceChildren();
+  if (plot.channels.length === 0) {
+    plot.chart.append(el("div", { class: "empty", textContent: "Add a channel from the menu above, or click one in the Channels list." }));
+    return;
+  }
+  const ink2 = cssVar("--ink-2"), grid = cssVar("--grid");
+  const axis = { stroke: ink2, grid: { stroke: grid, width: 1 }, ticks: { stroke: grid, width: 1 }, font: "12px system-ui, sans-serif" };
+  const opts = {
+    width: Math.max(200, plot.chart.clientWidth || plot.card.clientWidth - 24),
+    height: 240,
+    scales: { x: { time: false, range: () => S.renderRange } },
+    series: [
+      { label: "time (s)", value: (u, v) => v == null ? "—" : v.toFixed(3) },
+      ...plot.channels.map(name => ({
+        label: name, stroke: colorFor(name), width: 1.5, spanGaps: true, points: { show: false },
+        value: (u, v) => v == null ? "—" : formatValue(v),
+      })),
+    ],
+    axes: [{ ...axis }, { ...axis, size: 60 }],
+    cursor: {
+      sync: { key: "atlm" },
+      drag: { x: true, y: false, setScale: false },
+      bind: { dblclick: () => () => { onDoubleClick(); return null; } },
+    },
+    hooks: { setSelect: [onSelect] },
+    legend: { live: true },
+  };
+  plot.u = new uPlot(opts, [[], ...plot.channels.map(() => [])], plot.chart);
+  S.viewDirty = true;
+}
+
+function onSelect(u) {
+  const sel = u.select;
+  if (sel.width < 4) return;
+  const min = u.posToVal(sel.left, "x"), max = u.posToVal(sel.left + sel.width, "x");
+  u.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false);
+  S.view.zoom = [min, max];
+  if (S.view.mode === "live") S.view.paused = true;
+  updateHeader();
+  S.viewDirty = true;
+}
+
+function onDoubleClick() {
+  if (S.view.mode === "live") { S.view.paused = false; S.view.zoom = null; }
+  else S.view.zoom = null;
+  updateHeader();
+  S.viewDirty = true;
+}
+
+function togglePause() {
+  if (S.view.mode !== "live") return;
+  if (S.view.paused) { S.view.paused = false; S.view.zoom = null; }
+  else { S.view.zoom = currentRange(); S.view.paused = true; }
+  updateHeader();
+  S.viewDirty = true;
+}
+
+// Builds uPlot data for the visible range. Long ranges are reduced to a min
+// and a max per pixel column, which keeps every spike visible.
+function sliceData(table, names, range, maxPoints) {
+  const t = table.t, n = table.n;
+  const i0 = Math.max(0, lowerBound(t, range[0], n) - 1);
+  const i1 = Math.min(n, lowerBound(t, range[1], n) + 1);
+  const cols = names.map(name => table.cols.get(name)?.data);
+  const count = Math.max(0, i1 - i0);
+  if (count <= maxPoints) {
+    const xs = Array.from(t.subarray(i0, i1));
+    const ys = cols.map(d => {
+      const out = new Array(count);
+      for (let j = 0; j < count; j++) { const v = d ? d[i0 + j] : NaN; out[j] = v === v ? v : null; }
+      return out;
+    });
+    return [xs, ...ys];
+  }
+  const buckets = Math.floor(maxPoints / 2);
+  const xs = new Array(buckets * 2);
+  const ys = cols.map(() => new Array(buckets * 2).fill(null));
+  for (let k = 0; k < buckets; k++) {
+    const s = i0 + Math.floor(count * k / buckets), e = i0 + Math.floor(count * (k + 1) / buckets);
+    xs[2 * k] = t[s];
+    xs[2 * k + 1] = t[e - 1];
+    for (let c = 0; c < cols.length; c++) {
+      const d = cols[c];
+      if (!d) continue;
+      let min = Infinity, max = -Infinity, minAt = 0, maxAt = 0;
+      for (let j = s; j < e; j++) {
+        const v = d[j];
+        if (v < min) { min = v; minAt = j; }
+        if (v > max) { max = v; maxAt = j; }
+      }
+      if (min === Infinity) continue;
+      const first = minAt <= maxAt;
+      ys[c][2 * k] = first ? min : max;
+      ys[c][2 * k + 1] = first ? max : min;
+    }
+  }
+  return [xs, ...ys];
+}
+
+S.renderRange = [0, 10];
+let lastRender = 0;
+function renderLoop(now) {
+  requestAnimationFrame(renderLoop);
+  // New data only matters while the live view is following it.
+  const following = S.view.mode === "live" && !S.view.paused;
+  if (!(S.viewDirty || (S.dirty && following)) || now - lastRender < 33) return;
+  lastRender = now;
+  S.dirty = false;
+  S.viewDirty = false;
+  const table = currentTable();
+  S.renderRange = currentRange();
+  for (const plot of S.plots) {
+    if (!plot.u) continue;
+    plot.u.setData(sliceData(table, plot.channels, S.renderRange, Math.max(400, plot.u.width * 2)));
+  }
+}
+
+new ResizeObserver(() => {
+  for (const p of S.plots) if (p.u) p.u.setSize({ width: Math.max(200, p.chart.clientWidth), height: 240 });
+}).observe($("plots"));
+
+function autoLayout() {
+  const names = S.channelOrder.slice(0, 3);
+  if (names.length === 0) return;
+  for (const n of names) addPlot([n]);
+}
+
+function saveLayout() {
+  if (S.robot && S.robot.name && S.view.mode === "live") store("layout." + S.robot.name, S.plots.map(p => p.channels));
+}
+
+function loadLayout(name) {
+  const layout = recall("layout." + name);
+  clearPlots();
+  if (Array.isArray(layout) && layout.length) for (const channels of layout) addPlot(channels);
+  else autoLayout();
+}
+
+// ---------------------------------------------------------------- side panels
+
+let channelRows = new Map();
+function renderChannels(rebuild) {
+  const body = $("channels");
+  const names = S.view.mode === "review" ? S.view.dataset.order : S.channelOrder;
+  const inPlot = new Set(S.activePlot ? S.activePlot.channels : []);
+  if (rebuild || channelRows.size !== names.length) {
+    body.replaceChildren();
+    channelRows = new Map();
+    for (const name of names) {
+      const value = el("td", { class: "num" }), hz = el("td", { class: "num" });
+      const tr = el("tr", { title: "Add to or remove from the selected plot", onclick: () => {
+        const plot = S.activePlot || addPlot();
+        toggleChannel(plot, name);
+      } },
+        el("td", { class: "name" }, el("span", { class: "swatch", style: `display:inline-block;vertical-align:middle;margin-right:6px;background:${colorFor(name)}` }), name),
+        value, hz);
+      tr.classList.toggle("inplot", inPlot.has(name));
+      body.append(tr);
+      channelRows.set(name, { value, hz });
+    }
+    $("channelCount").textContent = names.length ? names.length + " channels" : "";
+  }
+  if (S.view.mode === "review") return;
+  for (const [name, row] of channelRows) {
+    const cs = S.channelStats.get(name);
+    row.value.textContent = cs ? formatValue(cs.value) : "";
+    row.hz.textContent = cs ? Math.round(cs.hz) : "";
+  }
+}
+
+function renderTunables() {
+  const box = $("tunables");
+  box.replaceChildren();
+  if (S.tunables.length === 0) {
+    box.append(el("p", { class: "hint", textContent: "Use Telemetry.tune() on the robot to edit variables here." }));
+    return;
+  }
+  for (const t of S.tunables) {
+    if (!t) continue;
+    let input;
+    if (t.type === TYPE_BOOL) {
+      input = el("input", { type: "checkbox", checked: !!t.value, onchange: () => setTunable(t, input.checked ? 1 : 0) });
+    } else {
+      input = el("input", { type: "number", step: t.type === TYPE_FLOAT ? "any" : "1", value: formatValue(t.value) });
+      const commit = () => {
+        const v = parseFloat(input.value);
+        if (v === v) { setTunable(t, v); input.classList.add("pending"); }
+      };
+      input.addEventListener("keydown", e => { if (e.key === "Enter") { commit(); input.blur(); } if (e.key === "Escape") { input.value = formatValue(t.value); input.blur(); } });
+      input.addEventListener("change", commit);
+    }
+    t.input = input;
+    box.append(el("div", { class: "tunable" }, el("span", { class: "name", textContent: t.name }), input));
+  }
+}
+
+function updateTunableValues() {
+  for (const t of S.tunables) {
+    if (!t || !t.input || document.activeElement === t.input) continue;
+    if (t.type === TYPE_BOOL) t.input.checked = !!t.value;
+    else {
+      t.input.value = formatValue(t.value);
+      t.input.classList.remove("pending");
+    }
+  }
+}
+
+function renderRecordings() {
+  const box = $("recordings");
+  box.replaceChildren();
+  if (S.recordings.length === 0) {
+    box.append(el("p", { class: "hint", textContent: "Recordings stay in this tab until you close it. Save the ones you want to keep." }));
+    return;
+  }
+  for (const rec of S.recordings) {
+    const saveButton = el("button", { textContent: "Save", onclick: () => { download(tableToCsvBlob(rec.table, rec.order), rec.name + ".csv"); rec.saved = true; renderRecordings(); } });
+    box.append(el("div", { class: "recording" },
+      el("div", { class: "info" },
+        el("div", { class: "name", textContent: rec.name }),
+        el("div", { textContent: `${formatDuration(rec.table.end - rec.table.start)} · ${rec.table.n.toLocaleString()} rows${rec.saved ? " · saved" : ""}` })),
+      el("button", { textContent: "View", onclick: () => review(rec) }),
+      saveButton,
+      el("button", { textContent: "×", title: "Delete", onclick: () => {
+        if (!rec.saved && !confirm(`Delete ${rec.name} without saving it?`)) return;
+        S.recordings = S.recordings.filter(r => r !== rec);
+        if (S.view.dataset === rec) backToLive();
+        renderRecordings();
+      } })));
+  }
+}
+
+function renderRobotSelect() {
+  const sel = $("robotSelect");
+  if (document.activeElement === sel) return;
+  const now = performance.now();
+  const current = sel.value;
+  sel.replaceChildren();
+  const entries = [...S.robots.entries()].filter(([mac, r]) => now - r.lastSeen < ROBOT_STALE_MS || (S.robot && S.robot.mac === mac));
+  if (S.robot && !S.robots.has(S.robot.mac)) entries.unshift([S.robot.mac, { name: S.robot.name || S.robot.mac, rssi: S.robot.rssi }]);
+  if (entries.length === 0) sel.append(el("option", { value: "", textContent: S.port ? "Searching..." : "Connect a dongle" }));
+  const nameCount = new Map();
+  for (const [, r] of entries) nameCount.set(r.name, (nameCount.get(r.name) || 0) + 1);
+  const ours = S.dongle ? S.dongle.mac : null;
+  for (const [mac, r] of entries) {
+    const mine = S.robot && S.robot.mac === mac;
+    const label = (r.name || mac) + (r.name && nameCount.get(r.name) > 1 ? ` [${mac.slice(-8)}]` : "");
+    const who = mine && S.dongle && S.dongle.state === DONGLE_LINKED ? " · paired"
+      : r.paired && r.pairedWith !== ours ? " · in use" : "";
+    sel.append(el("option", { value: mac, textContent: `${label}${r.rssi != null ? ` (${r.rssi} dBm)` : ""}${who}` }));
+  }
+  if (S.robot) sel.value = S.robot.mac;
+  else if (entries.some(([mac]) => mac === current)) sel.value = current;
+}
+
+function updateHeader() {
+  const d = S.dongle, r = S.robot;
+  $("connect").textContent = S.port ? "Disconnect" : "Connect";
+  $("dongleDot").className = "dot" + (S.port ? (d ? " good" : " warn") : "");
+  $("dongleText").textContent = !S.port ? "No dongle" : !d ? "Dongle: waiting..." : `Dongle: ch ${d.channel}`;
+
+  let robotText = "No robot", dot = "";
+  if (r) {
+    const linked = d && d.state === DONGLE_LINKED;
+    const name = r.name || r.mac;
+    if (d && d.state === DONGLE_BUSY) { robotText = `${name}: in use by another computer, waiting`; dot = " warn"; }
+    else if (!linked) { robotText = `${name}: pairing...`; dot = " warn"; }
+    else if (r.status && !r.status.streaming) { robotText = `${name}: paired, not streaming`; dot = " good"; }
+    else { robotText = `${name}: streaming${r.rssi != null ? `, ${r.rssi} dBm` : ""}`; dot = " good"; }
+  }
+  $("robotDot").className = "dot" + (S.rec ? " rec" : dot);
+  $("robotText").textContent = robotText;
+
+  $("pair").disabled = !S.port || (!r && !$("robotSelect").value);
+  $("pair").textContent = r ? "Unpair" : "Pair";
+  $("takeover").hidden = !(r && d && d.state === DONGLE_BUSY);
+  $("stream").disabled = !r;
+  $("stream").textContent = S.wantStream ? "Stop" : "Start";
+  $("stream").classList.toggle("on", S.wantStream && !!r);
+  $("record").disabled = !r && !S.rec;
+  $("record").textContent = S.rec ? "Stop recording" : "Record";
+  $("record").classList.toggle("on", !!S.rec);
+  $("pause").textContent = S.view.paused ? "Resume" : "Pause";
+  $("pause").classList.toggle("on", S.view.paused);
+  $("pause").disabled = S.view.mode !== "live";
+}
+
+function updateStats() {
+  const s = S.stats, d = S.dongle, st = S.robot && S.robot.status;
+  const rows = [
+    ["Signal", s.rssi != null && S.robot ? s.rssi + " dBm" : "—"],
+    ["Packets / s", s.pps.toFixed(0)],
+    ["Data rate", formatBytes(Math.round(s.bps)) + "/s"],
+    ["Packet loss", S.robot ? s.lossPct.toFixed(1) + " %" : "—"],
+    ["Robot: frames dropped", st ? st.framesDropped.toLocaleString() : "—"],
+    ["Robot: buffer use", st ? st.bufferUse + " %" : "—"],
+    ["Robot: send failures", st ? st.txFailures.toLocaleString() : "—"],
+    ["Robot: uptime", st ? formatDuration(st.uptimeMs / 1000) : "—"],
+    ["Robot: packet size", st ? st.payload + " B" : "—"],
+    ["Dongle: dropped", d ? d.rxDropped.toLocaleString() : "—"],
+    ["Serial errors", s.crcErrors.toLocaleString()],
+    ["Live buffer", `${S.live.n.toLocaleString()} rows, ${formatBytes(S.live.bytes)}`],
+  ];
+  $("stats").replaceChildren(...rows.flatMap(([k, v]) => [el("span", { textContent: k }), el("span", { textContent: v })]));
+}
+
+// ---------------------------------------------------------------- console and banner
+
+const consoleBox = $("console");
+function consoleLine(text, system) {
+  const atBottom = consoleBox.scrollTop + consoleBox.clientHeight >= consoleBox.scrollHeight - 4;
+  const t = S.clock.lastUs != null ? (S.clock.lastUs / 1e6).toFixed(2) : "";
+  const line = el("div", system ? { class: "sys" } : {}, el("span", { class: "t", textContent: t.padStart(8) + "  " }), text);
+  consoleBox.append(line);
+  while (consoleBox.childElementCount > 1000) consoleBox.firstElementChild.remove();
+  if (atBottom) consoleBox.scrollTop = consoleBox.scrollHeight;
+}
+function systemLine(text) { consoleLine(text, true); }
+
+function showBanner(html, buttonText, onClick) {
+  $("bannerText").innerHTML = html;
+  const b = $("bannerButton");
+  b.hidden = !buttonText;
+  b.textContent = buttonText || "";
+  b.onclick = onClick || null;
+  $("banner").classList.add("show");
+}
+function hideBanner() { $("banner").classList.remove("show"); }
+
+// ---------------------------------------------------------------- timers
+
+setInterval(() => {
+  // Once a second: rates and link quality
+  const s = S.stats;
+  s.pps = s.packets - s.lastPackets;
+  s.bps = s.bytes - s.lastBytes;
+  const lost = s.lost - s.lastLost;
+  s.lossPct = s.pps + lost > 0 ? (100 * lost) / (s.pps + lost) : 0;
+  s.lastPackets = s.packets; s.lastBytes = s.bytes; s.lastLost = s.lost;
+  for (const cs of S.channelStats.values()) { cs.hz = cs.count; cs.count = 0; }
+  updateStats();
+  renderRobotSelect();
+  autoPair();
+}, 1000);
+
+setInterval(() => {
+  if (S.view.mode === "live") renderChannels(false);
+  if (S.rec) {
+    const t = S.rec.table;
+    $("recInfo").textContent = `${formatDuration((performance.now() - S.rec.startedMs) / 1000)} · ${t.n.toLocaleString()} rows`;
+  } else $("recInfo").textContent = "";
+}, 250);
+
+// ---------------------------------------------------------------- wiring
+
+for (let ch = 1; ch <= 13; ch++) $("wifiChannel").append(el("option", { value: ch, textContent: "Wi-Fi ch " + ch }));
+$("wifiChannel").addEventListener("change", e => sendFrame(SER_CHANNEL, [Number(e.target.value)]));
+$("connect").addEventListener("click", connectDongle);
+$("robotSelect").addEventListener("change", updateHeader);
+$("pair").addEventListener("click", () => {
+  if (S.robot) unpairRobot();
+  else if ($("robotSelect").value) pairRobot($("robotSelect").value);
+});
+$("takeover").addEventListener("click", takeOver);
+$("stream").addEventListener("click", () => setStream(!S.wantStream));
+$("record").addEventListener("click", toggleRecording);
+$("window").addEventListener("change", e => { S.view.windowS = Number(e.target.value); store("window", S.view.windowS); S.viewDirty = true; });
+$("pause").addEventListener("click", togglePause);
+$("clear").addEventListener("click", () => { S.live.clear(); for (const cs of S.channelStats.values()) cs.value = NaN; S.viewDirty = true; });
+$("saveBuffer").addEventListener("click", saveBuffer);
+$("openCsv").addEventListener("click", () => $("csvFile").click());
+$("csvFile").addEventListener("change", e => { if (e.target.files[0]) openCsv(e.target.files[0]); e.target.value = ""; });
+$("addPlot").addEventListener("click", () => addPlot());
+$("clearConsole").addEventListener("click", () => consoleBox.replaceChildren());
+
+document.addEventListener("keydown", e => {
+  if (e.target.closest("input, select, textarea, button") || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === " " && S.robot) { e.preventDefault(); setStream(!S.wantStream); }
+  else if (e.key === "r" || e.key === "R") { if (S.robot || S.rec) toggleRecording(); }
+  else if (e.key === "p" || e.key === "P") togglePause();
+});
+
+window.addEventListener("beforeunload", e => {
+  if (S.rec || S.recordings.some(r => !r.saved)) { e.preventDefault(); e.returnValue = ""; }
+});
+
+if ("serial" in navigator) {
+  navigator.serial.addEventListener("disconnect", e => { if (e.target === S.port) disconnectDongle(); });
+} else {
+  showBanner("This browser doesn't support Web Serial, so it can't talk to the dongle. Open this page in <b>Chrome</b> or <b>Edge</b> on a computer. You can still open CSV files here.");
+  $("connect").disabled = true;
+}
+
+// Theme: auto, light, dark
+const THEMES = ["auto", "light", "dark"];
+let theme = recall("theme") || "auto";
+function applyTheme() {
+  if (theme === "auto") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", theme);
+  $("theme").textContent = "Theme: " + theme;
+  for (const p of S.plots) buildPlot(p);
+  renderChannels(true);
+}
+$("theme").addEventListener("click", () => { theme = THEMES[(THEMES.indexOf(theme) + 1) % 3]; store("theme", theme); applyTheme(); });
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (theme === "auto") applyTheme(); });
+
+const savedWindow = recall("window");
+if (savedWindow) { S.view.windowS = savedWindow; $("window").value = String(savedWindow); }
+applyTheme();
+updateHeader();
+updateStats();
+renderRecordings();
+requestAnimationFrame(renderLoop);
+</script>
+</body>
+</html>
