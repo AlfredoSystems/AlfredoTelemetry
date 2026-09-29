@@ -189,6 +189,7 @@ bool AlfredoTelemetryDongle::begin(uint8_t wifiChannel, unsigned long baud) {
     }
     WiFi.setSleep(false);  // the dongle never runs BLE, so keep the radio awake for the lowest latency
     esp_wifi_set_channel(_wifiChannel, WIFI_SECOND_CHAN_NONE);
+    esp_wifi_set_max_tx_power(_txPower);  // see setTxPower(); only works once Wi-Fi has started
     esp_wifi_get_mac(WIFI_IF_STA, _ownMac);
     memcpy(ownMac, _ownMac, 6);
 
@@ -260,6 +261,11 @@ void AlfredoTelemetryDongle::update() {
     }
     _hostWasAlive = hostAlive;
 
+    if (_scanRequested) {
+        _scanRequested = false;
+        scan();
+    }
+
     // Forward everything the radio received.
     size_t size;
     uint8_t *item;
@@ -280,7 +286,10 @@ void AlfredoTelemetryDongle::update() {
 void AlfredoTelemetryDongle::sendStatus() {
     uint8_t p[34];
     p[0] = PROTOCOL_VERSION;
-    p[1] = _wifiChannel;
+    uint8_t channel = _wifiChannel;
+    wifi_second_chan_t second;
+    esp_wifi_get_channel(&channel, &second);  // what the radio is really on
+    p[1] = channel;
     p[2] = _state;
     for (int i = 0; i < 6; i++) p[3 + i] = targetMac[i];
     putU32(p + 9, rxPackets);
@@ -291,6 +300,51 @@ void AlfredoTelemetryDongle::sendStatus() {
     p[29] = _stream;
     putU32(p + 30, radioHeard);
     writeFrame(SER_STATUS, p, sizeof(p));
+}
+
+// Lists nearby Wi-Fi networks, strongest first. Access points beacon all the
+// time, so an empty or very weak list means the radio or antenna isn't
+// receiving. Takes a few seconds, during which the robot link pauses.
+void AlfredoTelemetryDongle::scan() {
+    log("Scanning Wi-Fi (about 3 s)...");
+    int count = WiFi.scanNetworks();
+    esp_wifi_set_channel(_wifiChannel, WIFI_SECOND_CHAN_NONE);  // the scan leaves the radio on another channel
+    _lastPongMs = millis();  // the page couldn't answer while this blocked
+
+    char line[96];
+    if (count <= 0) {
+        log(count == 0 ? "Scan: no networks heard. If there is Wi-Fi nearby, the dongle's antenna isn't receiving."
+                       : "Scan failed");
+        WiFi.scanDelete();
+        return;
+    }
+    int perChannel[15] = {0};
+    for (int i = 0; i < count; i++) {
+        int ch = WiFi.channel(i);
+        if (ch >= 1 && ch <= 14) perChannel[ch]++;
+    }
+    snprintf(line, sizeof(line), "Scan: %d networks. Strongest:", count);
+    log(line);
+    // Strongest first; print at most 8
+    bool shown[64] = {false};
+    int limit = count < 64 ? count : 64;
+    for (int n = 0; n < 8 && n < limit; n++) {
+        int best = -1;
+        for (int i = 0; i < limit; i++) {
+            if (!shown[i] && (best < 0 || WiFi.RSSI(i) > WiFi.RSSI(best))) best = i;
+        }
+        shown[best] = true;
+        String ssid = WiFi.SSID(best);
+        snprintf(line, sizeof(line), "  %4ld dBm  ch %2ld  %s", (long)WiFi.RSSI(best), (long)WiFi.channel(best),
+                 ssid.length() ? ssid.c_str() : "(hidden)");
+        log(line);
+    }
+    int p = snprintf(line, sizeof(line), "Networks per channel:");
+    for (int ch = 1; ch <= 13 && p < (int)sizeof(line) - 8; ch++) {
+        if (perChannel[ch]) p += snprintf(line + p, sizeof(line) - p, " %d:%d", ch, perChannel[ch]);
+    }
+    log(line);
+    WiFi.scanDelete();
 }
 
 void AlfredoTelemetryDongle::log(const char *text) {
@@ -357,6 +411,8 @@ void AlfredoTelemetryDongle::handleHostFrame(uint8_t *frame, size_t length) {
         _lastHeartbeatMs = 0;  // tell the robot now
     } else if (type == SER_FORWARD && payloadLength >= 1) {
         if (_state != DONGLE_IDLE) radioSend(payload[0], payload + 1, payloadLength - 1);
+    } else if (type == SER_SCAN) {
+        _scanRequested = true;  // done from update(), after this frame is handled
     } else if (type == SER_CHANNEL && payloadLength >= 1) {
         if (payload[0] >= 1 && payload[0] <= 14 && esp_wifi_set_channel(payload[0], WIFI_SECOND_CHAN_NONE) == ESP_OK) {
             _wifiChannel = payload[0];

@@ -16,6 +16,7 @@
 // only copies a value into a buffer and never waits on the radio.
 
 #include <Arduino.h>
+#include <WiFi.h>
 #include <esp_wifi_types.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -79,6 +80,12 @@ class AlfredoTelemetry : public Print {
         // (which matters when sharing the radio with BLE); slower rates reach
         // farther. Default WIFI_PHY_RATE_12M. The dongle's rate doesn't need to match.
         void setRadioRate(wifi_phy_rate_t rate);
+        // Wi-Fi transmit power, e.g. WIFI_POWER_8_5dBm (the default). Some
+        // ESP32 boards, including the Alfredo NoU3 and Rotini, send frames
+        // nothing can decode at full power (19.5 dBm), while BLE and receiving
+        // still work. If your board's RF works at full power, raise this for
+        // more range.
+        void setTxPower(wifi_power_t power);
         // Size of the buffer that absorbs radio hiccups. Call before begin().
         // Default 16384 bytes, about 150 ms of 20 channels at 1 kHz.
         void setBufferSize(size_t bytes);
@@ -91,6 +98,12 @@ class AlfredoTelemetry : public Print {
 
         uint32_t getFramesSent() { return _framesSent; }
         uint32_t getFramesDropped() { return _framesDropped; }
+
+        // Prints one line of link diagnostics: whether telemetry started (and
+        // why not), the MAC address, the Wi-Fi channel the radio is really on,
+        // HELLOs sent, pairing, frames, and send failures. For debugging over
+        // USB: call it from loop() about once a second.
+        void printStatus(Print &out);
 
         // Print support: Telemetry.print(), println(), and printf() send text
         // to the page's console, one line at a time.
@@ -179,6 +192,7 @@ class AlfredoTelemetry : public Print {
         char _name[atlm::MAX_NAME_LENGTH + 1] = "";
         uint8_t _wifiChannel = 1;
         wifi_phy_rate_t _radioRate = WIFI_PHY_RATE_12M;
+        wifi_power_t _txPower = WIFI_POWER_8_5dBm;
         size_t _bufferSize = 16384;
         uint32_t _minFrameUs = 1000;
         uint32_t _watchPeriodUs = 10000;
@@ -193,6 +207,12 @@ class AlfredoTelemetry : public Print {
         volatile uint32_t _framesSent = 0;
         volatile uint32_t _framesDropped = 0;
         volatile uint32_t _txFailures = 0;
+        volatile uint32_t _txSuccesses = 0;
+        volatile esp_err_t _lastSendError = ESP_OK;  // ESP_ERR_TIMEOUT: no send callback, ESP_FAIL: not delivered
+        const char *_error = nullptr;                // why begin() failed
+        esp_err_t _errorCode = ESP_OK;
+        esp_err_t _channelError = ESP_OK;
+        esp_err_t _txPowerError = ESP_OK;
         portMUX_TYPE _lock = portMUX_INITIALIZER_UNLOCKED;
 
         Channel _channels[atlm::MAX_CHANNELS];

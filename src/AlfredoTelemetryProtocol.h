@@ -103,11 +103,14 @@ const uint8_t SER_LOG = 0x84;
 // STREAM   u8 on
 // FORWARD  u8 radio packet type, payload: sent to the paired robot as-is
 // CHANNEL  u8 wifi channel
+// SCAN     (no payload) scan for Wi-Fi networks and report them as LOG lines,
+//          to check that the dongle's radio and antenna receive anything at all
 const uint8_t SER_PONG = 0x01;
 const uint8_t SER_CONNECT = 0x02;
 const uint8_t SER_STREAM = 0x03;
 const uint8_t SER_FORWARD = 0x04;
 const uint8_t SER_CHANNEL = 0x05;
+const uint8_t SER_SCAN = 0x06;
 
 const uint8_t DONGLE_IDLE = 0;
 const uint8_t DONGLE_CONNECTING = 1;

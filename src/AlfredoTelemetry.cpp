@@ -72,17 +72,22 @@ bool AlfredoTelemetry::begin(const char *robotName, uint8_t wifiChannel) {
     wifi_mode_t mode = WiFi.getMode();
     if (!(mode & WIFI_MODE_STA)) {
         if (!WiFi.mode((wifi_mode_t)(mode | WIFI_MODE_STA))) {
-            log_e("Telemetry: could not start Wi-Fi");
+            _error = "Wi-Fi didn't start";
+            log_e("Telemetry: %s", _error);
             return false;
         }
     }
     // Wi-Fi power save is left at the core's default on purpose: when BLE
     // runs too, ESP-IDF requires modem sleep for coexistence and turning it
     // off can abort. The robot mostly transmits, which modem sleep doesn't delay.
-    if (!WiFi.isConnected()) esp_wifi_set_channel(_wifiChannel, WIFI_SECOND_CHAN_NONE);
+    if (!WiFi.isConnected()) _channelError = esp_wifi_set_channel(_wifiChannel, WIFI_SECOND_CHAN_NONE);
+    _txPowerError = esp_wifi_set_max_tx_power(_txPower);  // only works once Wi-Fi has started
 
-    if (esp_now_init() != ESP_OK) {
-        log_e("Telemetry: esp_now_init failed");
+    esp_err_t err = esp_now_init();
+    if (err != ESP_OK) {
+        _error = "esp_now_init failed";
+        _errorCode = err;
+        log_e("Telemetry: %s: %s", _error, esp_err_to_name(err));
         return false;
     }
 
@@ -91,7 +96,8 @@ bool AlfredoTelemetry::begin(const char *robotName, uint8_t wifiChannel) {
     _frameBuffer = xRingbufferCreate(_bufferSize, RINGBUF_TYPE_NOSPLIT);
     _textBuffer = xRingbufferCreate(TEXT_BUFFER_SIZE, RINGBUF_TYPE_NOSPLIT);
     if (!rxQueue || !txDone || !_frameBuffer || !_textBuffer) {
-        log_e("Telemetry: out of memory");
+        _error = "out of memory";
+        log_e("Telemetry: %s", _error);
         return false;
     }
 
@@ -103,7 +109,15 @@ bool AlfredoTelemetry::begin(const char *robotName, uint8_t wifiChannel) {
     peer.channel = 0;  // whatever channel the radio is on
     peer.ifidx = WIFI_IF_STA;
     peer.encrypt = false;
-    if (!esp_now_is_peer_exist(BROADCAST_MAC)) esp_now_add_peer(&peer);
+    if (!esp_now_is_peer_exist(BROADCAST_MAC)) {
+        err = esp_now_add_peer(&peer);
+        if (err != ESP_OK) {
+            _error = "couldn't add the broadcast peer";
+            _errorCode = err;
+            log_e("Telemetry: %s: %s", _error, esp_err_to_name(err));
+            return false;
+        }
+    }
 
     _started = true;
     // Core 0 is where Wi-Fi and BLE already live; loop() and most robot
@@ -121,6 +135,11 @@ void AlfredoTelemetry::setWatchRate(float hz) {
 }
 
 void AlfredoTelemetry::setRadioRate(wifi_phy_rate_t rate) { _radioRate = rate; }
+
+void AlfredoTelemetry::setTxPower(wifi_power_t power) {
+    _txPower = power;
+    if (_started) _txPowerError = esp_wifi_set_max_tx_power(power);
+}
 
 void AlfredoTelemetry::setBufferSize(size_t bytes) {
     if (!_started && bytes >= 1024) _bufferSize = bytes;
@@ -533,15 +552,54 @@ bool AlfredoTelemetry::radioSend(const uint8_t *mac, uint8_t type, const uint8_t
     // One packet in flight at a time: wait for the send callback, which
     // comes after the dongle's ACK (or after the driver gives up retrying).
     xSemaphoreTake(txDone, 0);
-    if (esp_now_send(mac, _tx, HEADER_SIZE + length) != ESP_OK) {
+    esp_err_t err = esp_now_send(mac, _tx, HEADER_SIZE + length);
+    if (err == ESP_OK) {
+        if (xSemaphoreTake(txDone, pdMS_TO_TICKS(50)) != pdTRUE) err = ESP_ERR_TIMEOUT;
+        else if (!txOk) err = ESP_FAIL;
+    }
+    if (err != ESP_OK) {
+        _lastSendError = err;
         _txFailures = _txFailures + 1;
         return false;
     }
-    if (xSemaphoreTake(txDone, pdMS_TO_TICKS(50)) != pdTRUE || !txOk) {
-        _txFailures = _txFailures + 1;
-        return false;
-    }
+    _txSuccesses = _txSuccesses + 1;
     return true;
+}
+
+void AlfredoTelemetry::printStatus(Print &out) {
+    if (!_started) {
+        if (_error) out.printf("Telemetry: NOT STARTED - %s%s%s\n", _error, _errorCode != ESP_OK ? ": " : "",
+                               _errorCode != ESP_OK ? esp_err_to_name(_errorCode) : "");
+        else out.println("Telemetry: not started (call Telemetry.begin())");
+        return;
+    }
+    uint8_t mac[6] = {0};
+    esp_wifi_get_mac(WIFI_IF_STA, mac);
+    uint8_t channel = 0;
+    wifi_second_chan_t second;
+    esp_wifi_get_channel(&channel, &second);
+
+    out.printf("Telemetry '%s': mac %02x:%02x:%02x:%02x:%02x:%02x, ch %u", _name, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], channel);
+    if (channel != _wifiChannel) out.printf(" (asked for %u%s)", _wifiChannel, WiFi.isConnected() ? ", using the Wi-Fi network's" : "");
+    if (_channelError != ESP_OK) out.printf(" [set channel failed: %s]", esp_err_to_name(_channelError));
+    int8_t power = 0;
+    esp_wifi_get_max_tx_power(&power);
+    out.printf(", tx %.1f dBm", power / 4.0f);
+    if (_txPowerError != ESP_OK) out.printf(" [set tx power failed: %s]", esp_err_to_name(_txPowerError));
+    out.printf(", HELLOs %u", _helloSeq);
+    if (_connected) {
+        out.printf(" | paired with %02x:%02x:%02x:%02x:%02x:%02x, %s", _dongleMac[0], _dongleMac[1], _dongleMac[2], _dongleMac[3],
+                   _dongleMac[4], _dongleMac[5], _streaming ? "streaming" : "not streaming");
+    } else {
+        out.print(" | not paired");
+    }
+    out.printf(" | frames %lu sent, %lu dropped | sends %lu ok, %lu failed", (unsigned long)_framesSent,
+               (unsigned long)_framesDropped, (unsigned long)_txSuccesses, (unsigned long)_txFailures);
+    if (_lastSendError != ESP_OK) {
+        esp_err_t e = _lastSendError;
+        out.printf(" (last: %s)", e == ESP_ERR_TIMEOUT ? "no send callback" : e == ESP_FAIL ? "not delivered" : esp_err_to_name(e));
+    }
+    out.println();
 }
 
 void AlfredoTelemetry::sendHello() {
@@ -562,8 +620,14 @@ void AlfredoTelemetry::sendStatus() {
     _lastStatusMs = millis();
     uint8_t *p = _tx + HEADER_SIZE;
     uint8_t nameLength = strlen(_name);
-    size_t freeBytes = xRingbufferGetCurFreeSize(_frameBuffer);
-    uint8_t bufferUse = freeBytes >= _bufferSize ? 0 : 100 - (freeBytes * 100) / _bufferSize;
+    // Bytes between the free and write positions are in use. (The "current
+    // free size" call can't be used here: for this kind of ring buffer it
+    // never reports more than half the buffer, even when it's empty.)
+    UBaseType_t freePos, readPos, writePos, acquirePos, itemsWaiting;
+    vRingbufferGetInfo(_frameBuffer, &freePos, &readPos, &writePos, &acquirePos, &itemsWaiting);
+    size_t used = (writePos + _bufferSize - freePos) % _bufferSize;
+    if (used == 0 && (itemsWaiting > 0 || readPos != freePos)) used = _bufferSize;  // full, not empty
+    uint8_t bufferUse = (used * 100) / _bufferSize;
     putU16(p + 0, _schemaVersion);
     putU16(p + 2, _tunablesVersion);
     putU32(p + 4, millis());

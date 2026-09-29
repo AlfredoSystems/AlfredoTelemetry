@@ -23,6 +23,11 @@
   - 3 Hz flash: streaming
   - fast 10 Hz flash: telemetry failed to start
 
+  USB debugging (optional, the robot runs fine on battery):
+  - Open the Serial Monitor at 115200 baud. Once a second it prints what
+    telemetry is doing: the Wi-Fi channel the radio is really on, HELLOs sent
+    (the robot announcing itself to dongles), pairing, and any send failures.
+
   Checking the data:
   - "sample" counts IMU samples. A jump in it means rows were lost over the
     radio. The page's Link panel shows packet loss too.
@@ -65,12 +70,16 @@ void taskSampleIMU(void *pvParameters) {
 }
 
 void setup() {
+  Serial.begin(115200);
   telemetryStarted = Telemetry.begin("NoU3_IMU");
+  Telemetry.printStatus(Serial);
 
   NoU3.begin();
   NoU3.setServiceLight(LIGHT_OFF);
 
+  Serial.println("Calibrating the IMU, keep the robot still...");
   NoU3.calibrateIMUs();
+  Serial.println("IMU calibrated");
 
   xTaskCreatePinnedToCore(taskSampleIMU, "taskSampleIMU", 4096, NULL, 2, NULL, 1);
 }
@@ -83,6 +92,12 @@ void loop() {
   else if (Telemetry.isConnected()) on = true;             // paired
   else on = t % 1000 < 60;                                 // looking for the dongle
   NoU3.setServiceLight(on ? LIGHT_ON : LIGHT_OFF);
+
+  static unsigned long lastPrintTime = 0;
+  if (t - lastPrintTime >= 1000) {
+    lastPrintTime = t;
+    Telemetry.printStatus(Serial);
+  }
 
   delay(1);
 }

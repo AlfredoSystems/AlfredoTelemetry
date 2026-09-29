@@ -173,6 +173,7 @@ kbd { font: 11px ui-monospace, Consolas, monospace; border: 1px solid var(--bord
           <option value="2000000">2000000</option>
         </select>
         <select id="wifiChannel" title="Wi-Fi channel (must match the robot)"></select>
+        <button id="scan" title="List the Wi-Fi networks the dongle can hear (checks its radio and antenna)">Scan</button>
       </div>
     </div>
     <div class="field">
@@ -294,7 +295,7 @@ const PKT_REQUEST = 0x12, PKT_SET_TUNABLE = 0x13;
 const REQUEST_SCHEMA = 0x01, REQUEST_TUNABLES = 0x02;
 const TYPE_FLOAT = 0, TYPE_INT = 1, TYPE_UINT = 2, TYPE_BOOL = 3;
 const SER_SEEN = 0x81, SER_PACKET = 0x82, SER_STATUS = 0x83, SER_LOG = 0x84;
-const SER_PONG = 0x01, SER_CONNECT = 0x02, SER_STREAM = 0x03, SER_FORWARD = 0x04, SER_CHANNEL = 0x05;
+const SER_PONG = 0x01, SER_CONNECT = 0x02, SER_STREAM = 0x03, SER_FORWARD = 0x04, SER_CHANNEL = 0x05, SER_SCAN = 0x06;
 const DONGLE_IDLE = 0, DONGLE_CONNECTING = 1, DONGLE_LINKED = 2, DONGLE_BUSY = 3;
 const HELLO_PAIRED = 0x01, CONNECT_TAKEOVER = 0x01;
 
@@ -1432,6 +1433,7 @@ setInterval(() => {
 
 for (let ch = 1; ch <= 13; ch++) $("wifiChannel").append(el("option", { value: ch, textContent: "Wi-Fi ch " + ch }));
 $("wifiChannel").addEventListener("change", e => sendFrame(SER_CHANNEL, [Number(e.target.value)]));
+$("scan").addEventListener("click", () => { if (S.port) sendFrame(SER_SCAN); else systemLine("Connect a dongle first"); });
 $("connect").addEventListener("click", connectDongle);
 $("robotSelect").addEventListener("change", updateHeader);
 $("pair").addEventListener("click", () => {

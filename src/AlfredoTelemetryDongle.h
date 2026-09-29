@@ -13,6 +13,7 @@
 // is about 90 KB/s).
 
 #include <Arduino.h>
+#include <WiFi.h>
 #include <esp_wifi_types.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/ringbuf.h>
@@ -31,6 +32,13 @@ class AlfredoTelemetryDongle {
         // Radio bitrate for packets to the robot (they're all small).
         void setRadioRate(wifi_phy_rate_t rate) { _radioRate = rate; }
 
+        // Wi-Fi transmit power, e.g. WIFI_POWER_8_5dBm (the default). Call
+        // before begin(). Some ESP32 boards, including the Alfredo NoU3 and
+        // Rotini, send frames nothing can decode at full power (19.5 dBm),
+        // while receiving still works. If your board's RF works at full
+        // power, raise this for more range.
+        void setTxPower(wifi_power_t power) { _txPower = power; }
+
     private:
         void readHost();
         void handleHostFrame(uint8_t *frame, size_t length);
@@ -40,8 +48,10 @@ class AlfredoTelemetryDongle {
         void setTarget(const uint8_t *mac, bool takeover);
         void radioSend(uint8_t type, const uint8_t *payload, size_t length);
         void log(const char *text);
+        void scan();
 
         wifi_phy_rate_t _radioRate = WIFI_PHY_RATE_12M;
+        wifi_power_t _txPower = WIFI_POWER_8_5dBm;
         uint8_t _wifiChannel = 1;
         bool _started = false;
         uint8_t _state = atlm::DONGLE_IDLE;
@@ -55,6 +65,7 @@ class AlfredoTelemetryDongle {
         uint32_t _lastConnectMs = 0;
         uint32_t _lastHeartbeatMs = 0;
         bool _hostWasAlive = false;
+        bool _scanRequested = false;
 
         uint8_t _in[2 * atlm::MAX_PAYLOAD];  // COBS frame from the host being received
         size_t _inLength = 0;
