@@ -588,6 +588,7 @@ function handleDongleStatus(p) {
     protocol: p[0], channel: p[1], state: p[2], target: macString(p.subarray(3, 9)),
     rxPackets: v.getUint32(9, true), rxDropped: v.getUint32(13, true), txFailures: v.getUint32(17, true),
     maxPayload: v.getUint16(21, true), mac: macString(p.subarray(23, 29)), stream: p[29] !== 0,
+    heard: p.length >= 34 ? v.getUint32(30, true) : null,
   };
   sendFrame(SER_PONG);
   if (first) {
@@ -1296,15 +1297,16 @@ function renderRecordings() {
   }
 }
 
+// Updates the options in place (rather than rebuilding them) so the list
+// stays current even while it has focus, without closing it every second.
 function renderRobotSelect() {
   const sel = $("robotSelect");
-  if (document.activeElement === sel) return;
   const now = performance.now();
   const current = sel.value;
-  sel.replaceChildren();
   const entries = [...S.robots.entries()].filter(([mac, r]) => now - r.lastSeen < ROBOT_STALE_MS || (S.robot && S.robot.mac === mac));
   if (S.robot && !S.robots.has(S.robot.mac)) entries.unshift([S.robot.mac, { name: S.robot.name || S.robot.mac, rssi: S.robot.rssi }]);
-  if (entries.length === 0) sel.append(el("option", { value: "", textContent: S.port ? "Searching..." : "Connect a dongle" }));
+  const wanted = [];
+  if (entries.length === 0) wanted.push(["", S.port ? "Searching..." : "Connect a dongle"]);
   const nameCount = new Map();
   for (const [, r] of entries) nameCount.set(r.name, (nameCount.get(r.name) || 0) + 1);
   const ours = S.dongle ? S.dongle.mac : null;
@@ -1313,8 +1315,16 @@ function renderRobotSelect() {
     const label = (r.name || mac) + (r.name && nameCount.get(r.name) > 1 ? ` [${mac.slice(-8)}]` : "");
     const who = mine && S.dongle && S.dongle.state === DONGLE_LINKED ? " · paired"
       : r.paired && r.pairedWith !== ours ? " · in use" : "";
-    sel.append(el("option", { value: mac, textContent: `${label}${r.rssi != null ? ` (${r.rssi} dBm)` : ""}${who}` }));
+    wanted.push([mac, `${label}${r.rssi != null ? ` (${r.rssi} dBm)` : ""}${who}`]);
   }
+  for (let i = 0; i < wanted.length; i++) {
+    const [value, text] = wanted[i];
+    let o = sel.options[i];
+    if (!o) { o = el("option"); sel.append(o); }
+    if (o.value !== value) o.value = value;
+    if (o.textContent !== text) o.textContent = text;
+  }
+  while (sel.options.length > wanted.length) sel.lastElementChild.remove();
   if (S.robot) sel.value = S.robot.mac;
   else if (entries.some(([mac]) => mac === current)) sel.value = current;
 }
@@ -1363,6 +1373,7 @@ function updateStats() {
     ["Robot: send failures", st ? st.txFailures.toLocaleString() : "—"],
     ["Robot: uptime", st ? formatDuration(st.uptimeMs / 1000) : "—"],
     ["Robot: packet size", st ? st.payload + " B" : "—"],
+    ["Dongle: packets heard", d && d.heard != null ? d.heard.toLocaleString() : "—"],
     ["Dongle: dropped", d ? d.rxDropped.toLocaleString() : "—"],
     ["Serial errors", s.crcErrors.toLocaleString()],
     ["Live buffer", `${S.live.n.toLocaleString()} rows, ${formatBytes(S.live.bytes)}`],

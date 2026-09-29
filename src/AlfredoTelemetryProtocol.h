@@ -89,7 +89,8 @@ const uint8_t TYPE_BOOL = 3;
 // PACKET  i8 rssi, a packet from the paired robot (header included)
 // STATUS  u8 protocol, u8 wifi channel, u8 state (DONGLE_*), u8[6] target mac,
 //         u32 packets received, u32 packets dropped (dongle buffer full),
-//         u32 tx failures, u16 max payload, u8[6] dongle mac, u8 streaming requested
+//         u32 tx failures, u16 max payload, u8[6] dongle mac, u8 streaming requested,
+//         u32 ESP-NOW packets heard from anyone
 // LOG     raw characters from the dongle itself
 const uint8_t SER_SEEN = 0x81;
 const uint8_t SER_PACKET = 0x82;

@@ -25,6 +25,7 @@ volatile bool robotBusy = false;      // the target robot's HELLO says it's pair
 uint8_t ownMac[6] = {0};
 volatile uint32_t lastRobotMs = 0;
 volatile uint32_t rxPackets = 0;
+volatile uint32_t radioHeard = 0;  // every ESP-NOW packet, from anyone: shows whether the radio hears anything
 volatile uint32_t rxDropped = 0;
 volatile uint32_t txFailures = 0;
 
@@ -68,6 +69,7 @@ void queueForHost(uint8_t type, const uint8_t *prefix, size_t prefixLength, cons
 
 // Runs in the Wi-Fi task, so it only copies the packet out.
 void onReceive(const esp_now_recv_info_t *info, const uint8_t *data, int length) {
+    radioHeard = radioHeard + 1;
     if (rxBuffer == nullptr || length < (int)HEADER_SIZE || data[0] != MAGIC) return;
     int8_t rssi = info->rx_ctrl ? info->rx_ctrl->rssi : 0;
     uint8_t type = data[1];
@@ -276,7 +278,7 @@ void AlfredoTelemetryDongle::update() {
 }
 
 void AlfredoTelemetryDongle::sendStatus() {
-    uint8_t p[30];
+    uint8_t p[34];
     p[0] = PROTOCOL_VERSION;
     p[1] = _wifiChannel;
     p[2] = _state;
@@ -287,6 +289,7 @@ void AlfredoTelemetryDongle::sendStatus() {
     putU16(p + 21, MAX_PAYLOAD);
     memcpy(p + 23, _ownMac, 6);
     p[29] = _stream;
+    putU32(p + 30, radioHeard);
     writeFrame(SER_STATUS, p, sizeof(p));
 }
 
