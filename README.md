@@ -81,22 +81,6 @@ CSV files have one row per frame. The first column is `time_s`, starting at 0, f
 
 Pairing isn't password protected: anyone with this page can still pick a free robot from the list, or take one over on purpose, and change its tunables.
 
-## ESP-NOW and BLE together
-
-**Yes, on the ESP32-S3** (and the C3/C6). The **ESP32-S2 has no Bluetooth at all**, so a BLE robot has to be an S3.
-
-The S3 has one 2.4 GHz radio. ESP-IDF's software coexistence scheduler splits it between Wi-Fi (which ESP-NOW runs on) and BLE, and the stock Arduino ESP32 core has coexistence turned on (`CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y`). `examples/NoU3_PestoLink` drives a NoU3 over PestoLink while streaming the IMU, the joystick, and the motor outputs.
-
-Expect these trade-offs:
-
-- **Throughput is lower than ESP-NOW alone, and latency varies more**, because Wi-Fi only gets the radio part of the time. Unicast packets are ACKed and retried by the Wi-Fi hardware, and the buffer absorbs the gaps. Check the Link panel for packet loss and robot dropped frames.
-- **Short packets fit between BLE events better.** Keep the radio rate at 12 Mbps or faster; at 1 Mbps a full packet ties up the radio for about 12 ms.
-- **Only send what you need.** `setMaxRate(200)` is plenty for driving data, and `watch()` at the sensor's own rate avoids duplicate samples.
-- **Don't turn off Wi-Fi power save** (`WiFi.setSleep(false)`) on a robot that runs BLE: ESP-IDF requires modem sleep when both are on. The library leaves it at the default for this reason. The dongle never runs BLE, so it keeps its radio fully awake.
-- **Both radios use RAM.** Wi-Fi and BLE each allocate their buffers when they start. An S3 has room for both, but check `ESP.getFreeHeap()` if you also add big buffers of your own.
-
-A CRSF/ExpressLRS receiver (like on Rotini) has its own radio chip, so there's no scheduler involved. It does share the 2.4 GHz band, though, so keep the receiver antenna away from the ESP32's antenna.
-
 ## Transmit power
 
 Both the robot and the dongle transmit at **8.5 dBm** by default, not the ESP32's usual 19.5 dBm. This works around a known problem: on some ESP32 boards, Wi-Fi frames sent at full power can't be decoded by anything, while receiving (and BLE) still work fine. The Alfredo NoU3 and Rotini both do this. At 19.5 dBm, two of them side by side heard nothing from each other; at 8.5 dBm they heard every packet at about −35 dBm. The ESP32-C3 SuperMini and QT Py ESP32-C3 are other well-known examples; poor antenna matching is the usual suspect.
