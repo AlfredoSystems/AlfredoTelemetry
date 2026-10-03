@@ -29,14 +29,16 @@ class AlfredoTelemetryDongle {
         // Call from loop() as often as possible.
         void update();
 
-        // Radio bitrate for packets to the robot (they're all small).
+        // Radio bitrate for packets to the robot. They're all small, so the
+        // default is the slowest, most robust rate: at the edge of range,
+        // lost heartbeats would make the robot drop the link.
         void setRadioRate(wifi_phy_rate_t rate) { _radioRate = rate; }
 
-        // Wi-Fi transmit power, e.g. WIFI_POWER_8_5dBm (the default). Call
+        // Wi-Fi transmit power, e.g. WIFI_POWER_11dBm (the default). Call
         // before begin(). Some ESP32 boards, including the Alfredo NoU3 and
-        // Rotini, send frames nothing can decode at full power (19.5 dBm),
-        // while receiving still works. If your board's RF works at full
-        // power, raise this for more range.
+        // Rotini, send frames nothing can decode above about 13 dBm, while
+        // receiving still works at any power. If your board's RF works at
+        // full power (WIFI_POWER_19_5dBm), raise this for more range.
         void setTxPower(wifi_power_t power) { _txPower = power; }
 
     private:
@@ -50,8 +52,8 @@ class AlfredoTelemetryDongle {
         void log(const char *text);
         void scan();
 
-        wifi_phy_rate_t _radioRate = WIFI_PHY_RATE_12M;
-        wifi_power_t _txPower = WIFI_POWER_8_5dBm;
+        wifi_phy_rate_t _radioRate = WIFI_PHY_RATE_1M_L;
+        wifi_power_t _txPower = WIFI_POWER_11dBm;
         uint8_t _wifiChannel = 1;
         bool _started = false;
         uint8_t _state = atlm::DONGLE_IDLE;

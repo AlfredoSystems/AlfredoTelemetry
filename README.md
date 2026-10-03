@@ -41,8 +41,8 @@ The viewer is a single local page with no install and no internet needed; uPlot 
 | `Telemetry.print()`, `println()`, `printf()` | Text for the viewer's console, sent a line at a time. |
 | `Telemetry.setMaxRate(hz)` | Most frames per second from `add()`/`send()` (default 1000). Faster passes are merged, keeping each channel's latest value, so a loop running at 20 kHz doesn't flood the radio. |
 | `Telemetry.setWatchRate(hz)` | `watch()` sample rate (default 100, max 1000). |
-| `Telemetry.setRadioRate(rate)` | Wi-Fi bitrate, e.g. `WIFI_PHY_RATE_24M` (default 12 Mbps). Faster rates carry more data and take less airtime, which helps when sharing the radio with BLE; slower rates reach farther. |
-| `Telemetry.setTxPower(power)` | Wi-Fi transmit power, e.g. `WIFI_POWER_8_5dBm` (the default). See [Transmit power](#transmit-power). The dongle has `TelemetryDongle.setTxPower()`, called before `begin()`. |
+| `Telemetry.setRadioRate(rate)` | Wi-Fi bitrate, default `WIFI_PHY_RATE_12M`. Faster rates like `WIFI_PHY_RATE_24M` carry more data and take less airtime, which helps when sharing the radio with BLE. Slower rates reach farther: `WIFI_PHY_RATE_6M` gains a few dB, `WIFI_PHY_RATE_1M_L` about 8 dB at 12 times the airtime. The dongle's rate is separate and defaults to 1 Mbps, since it only sends small packets. |
+| `Telemetry.setTxPower(power)` | Wi-Fi transmit power, e.g. `WIFI_POWER_11dBm` (the default). See [Transmit power](#transmit-power). The dongle has `TelemetryDongle.setTxPower()`, called before `begin()`. |
 | `Telemetry.printStatus(Serial)` | Prints one line of link diagnostics over USB: whether telemetry started, the MAC address, the Wi-Fi channel and transmit power the radio is really using, HELLOs sent, pairing, and send failures. |
 | `Telemetry.setBufferSize(bytes)` | Buffer between `add()` and the radio. Call before `begin()`; the default is 16 KB. |
 | `Telemetry.isConnected()` / `isStreaming()` | True while the page is paired, and while it has streaming on. |
@@ -61,7 +61,7 @@ Limits: 64 channels, 32 tunables, 31-character names, and 120-character console 
 
 ## Viewer
 
-- **Plots.** Plots come from your robot's channels, and the layout is saved per robot name. Click a plot to select it, then click channels in the Channels list to add or remove them, or use each plot's **+ channel** menu. Drag across a plot to zoom, which pauses the live view. Double-click to go back. Long ranges are drawn min/max per pixel, so spikes never disappear.
+- **Plots.** Plots come from your robot's channels, and the layout is saved per robot name. Click a plot to select it, then click channels in the Channels list to add or remove them, or use each plot's **+ channel** menu. Drag across a plot to zoom, which pauses the live view. Double-click to go back. Long ranges are drawn min/max per pixel, so spikes never disappear. Each plot's **+ link** menu adds the link quality the page measures (signal in dBm, packets per second, data rate, packet loss), sampled 4 times a second; these record and export like any other channel.
 - **Start / Stop** (Space) turns streaming on and off on the robot itself, which frees the radio when you don't need data.
 - **Record** (R) captures everything the robot sends until you stop it. Recordings show up in the Recordings panel, where **Save** downloads a CSV and **View** opens one to zoom through.
 - **Save buffer** saves the last 2 minutes of live data, for when something interesting happens and you weren't recording.
@@ -83,9 +83,9 @@ Pairing isn't password protected: anyone with this page can still pick a free ro
 
 ## Transmit power
 
-Both the robot and the dongle transmit at **8.5 dBm** by default, not the ESP32's usual 19.5 dBm. This works around a known problem: on some ESP32 boards, Wi-Fi frames sent at full power can't be decoded by anything, while receiving (and BLE) still work fine. The Alfredo NoU3 and Rotini both do this. At 19.5 dBm, two of them side by side heard nothing from each other; at 8.5 dBm they heard every packet at about −35 dBm. The ESP32-C3 SuperMini and QT Py ESP32-C3 are other well-known examples; poor antenna matching is the usual suspect.
+Both the robot and the dongle transmit at **11 dBm** by default, not the ESP32's usual 19.5 dBm. This works around a known problem: on some ESP32 boards, Wi-Fi frames sent at high power can't be decoded by anything, while receiving (and BLE) still work fine. The Alfredo NoU3 and Rotini both do this. Measured between two NoU3s side by side: 8.5, 11 and 13 dBm delivered every packet; at 15 dBm 92% of sends failed; at 17 dBm and above nothing got through at all. The ESP32-C3 SuperMini and QT Py ESP32-C3 are other well-known examples; poor antenna matching is the usual suspect.
 
-8.5 dBm still reaches well across a room or an arena. If your boards work at full power and you want more range, raise it on both sides:
+11 dBm reaches across a room or an arena, with 2 dB of margin below the point where these boards break. If your boards work at full power and you want more range, raise it on both sides:
 
 ```cpp
 Telemetry.setTxPower(WIFI_POWER_19_5dBm);        // robot
@@ -94,7 +94,7 @@ TelemetryDongle.setTxPower(WIFI_POWER_19_5dBm);  // dongle, before begin()
 
 ## Troubleshooting
 
-- **The robot never shows up, but its status says HELLOs are being sent.** If the dongle's **Dongle: packets heard** (in the Link panel) stays at 0, its radio isn't receiving anything from the robot. Check the transmit power first: if you raised it, go back to the 8.5 dBm default (see [Transmit power](#transmit-power)).
+- **The robot never shows up, but its status says HELLOs are being sent.** If the dongle's **Dongle: packets heard** (in the Link panel) stays at 0, its radio isn't receiving anything from the robot. Check the transmit power first: if you raised it, go back to the 11 dBm default (see [Transmit power](#transmit-power)).
 - **The robot never shows up.** Both sides must be on the same Wi-Fi channel: check `Telemetry.begin(name, channel)`, and the channel picker in the page (it changes the dongle). If the robot also joins a Wi-Fi network, ESP-NOW has to use that network's channel, so set the dongle to it.
 - **Only one ESP-NOW user per sketch.** ESP-NOW allows one receive callback, so this library can't share it with other ESP-NOW code in the same sketch.
 - **Slow or choppy data with a USB-to-UART dongle.** Use a native-USB S2/S3 dongle with USB CDC On Boot enabled, or use `TelemetryDongle.begin(1, 2000000)` and pick 2000000 in the page if your USB chip supports it.

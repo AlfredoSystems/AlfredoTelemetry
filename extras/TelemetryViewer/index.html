@@ -300,6 +300,15 @@ const DONGLE_IDLE = 0, DONGLE_CONNECTING = 1, DONGLE_LINKED = 2, DONGLE_BUSY = 3
 const HELLO_PAIRED = 0x01, CONNECT_TAKEOVER = 0x01;
 
 const LIVE_BUFFER_S = 120;     // seconds of live data kept for plotting and "Save buffer"
+// Link quality, measured by the page and sampled into the data tables 4 times
+// a second, so it plots and records like a robot channel.
+const LINK_CHANNELS = {
+  signal_dbm: "Signal (dBm)",
+  packets_per_s: "Packets / s",
+  data_rate_kb_s: "Data rate (KB/s)",
+  packet_loss_pct: "Packet loss (%)",
+};
+const displayName = name => LINK_CHANNELS[name] || name;
 const ROBOT_STALE_MS = 3000;   // a robot not heard from for this long leaves the list
 const STORE = "alfredo-telemetry.";
 
@@ -1056,14 +1065,22 @@ function buildPlot(plot) {
   const chips = el("div", { class: "chips" });
   for (const name of plot.channels) {
     chips.append(el("span", { class: "chip" },
-      el("span", { class: "swatch", style: `background:${colorFor(name)}` }), name,
+      el("span", { class: "swatch", style: `background:${colorFor(name)}` }), displayName(name),
       el("button", { title: "Remove", textContent: "×", onclick: () => toggleChannel(plot, name) })));
   }
   const menu = el("select", { title: "Add a channel", onchange: e => { if (e.target.value) toggleChannel(plot, e.target.value); } });
   menu.append(el("option", { value: "", textContent: "+ channel" }));
   const available = S.view.mode === "review" ? S.view.dataset.order : S.channelOrder;
-  for (const n of available) if (!plot.channels.includes(n)) menu.append(el("option", { value: n, textContent: n }));
+  for (const n of available) if (!plot.channels.includes(n) && !LINK_CHANNELS[n]) menu.append(el("option", { value: n, textContent: n }));
   chips.append(menu);
+  const linkMenu = el("select", { title: "Add a link quality value", onchange: e => { if (e.target.value) toggleChannel(plot, e.target.value); } });
+  linkMenu.append(el("option", { value: "", textContent: "+ link" }));
+  for (const [n, label] of Object.entries(LINK_CHANNELS)) {
+    if (plot.channels.includes(n)) continue;
+    if (S.view.mode === "review" && !S.view.dataset.table.cols.has(n)) continue;
+    linkMenu.append(el("option", { value: n, textContent: label }));
+  }
+  chips.append(linkMenu);
   plot.head.replaceChildren(chips, el("button", { title: "Remove plot", textContent: "Remove", style: "font-size:12px;padding:2px 7px", onclick: () => removePlot(plot) }));
 
   if (plot.u) { plot.u.destroy(); plot.u = null; }
@@ -1081,7 +1098,7 @@ function buildPlot(plot) {
     series: [
       { label: "time (s)", value: (u, v) => v == null ? "—" : v.toFixed(3) },
       ...plot.channels.map(name => ({
-        label: name, stroke: colorFor(name), width: 1.5, spanGaps: true, points: { show: false },
+        label: displayName(name), stroke: colorFor(name), width: 1.5, spanGaps: true, points: { show: false },
         value: (u, v) => v == null ? "—" : formatValue(v),
       })),
     ],
@@ -1420,6 +1437,28 @@ setInterval(() => {
   renderRobotSelect();
   autoPair();
 }, 1000);
+
+// Link quality as data: one row every 250 ms at the robot's latest time
+const linkSample = { packets: 0, bytes: 0, lost: 0 };
+setInterval(() => {
+  const s = S.stats;
+  const packets = s.packets - linkSample.packets, bytes = s.bytes - linkSample.bytes, lost = s.lost - linkSample.lost;
+  linkSample.packets = s.packets; linkSample.bytes = s.bytes; linkSample.lost = s.lost;
+  if (!S.robot || S.clock.lastUs === null) return;
+  const values = {
+    signal_dbm: s.rssi, packets_per_s: packets * 4, data_rate_kb_s: (bytes * 4) / 1024,
+    packet_loss_pct: packets + lost > 0 ? (100 * lost) / (packets + lost) : 0,
+  };
+  const t = S.clock.lastUs / 1e6;
+  for (const table of [S.live, S.rec && S.rec.table]) {
+    if (!table) continue;
+    const row = table.row(t);
+    if (row < 0) continue;
+    for (const [name, v] of Object.entries(values)) if (v != null) table.column(name, TYPE_FLOAT).data[row] = v;
+  }
+  for (const name of Object.keys(values)) colorFor(name);
+  S.dirty = true;
+}, 250);
 
 setInterval(() => {
   if (S.view.mode === "live") renderChannels(false);

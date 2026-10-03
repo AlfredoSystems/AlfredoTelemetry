@@ -80,11 +80,11 @@ class AlfredoTelemetry : public Print {
         // (which matters when sharing the radio with BLE); slower rates reach
         // farther. Default WIFI_PHY_RATE_12M. The dongle's rate doesn't need to match.
         void setRadioRate(wifi_phy_rate_t rate);
-        // Wi-Fi transmit power, e.g. WIFI_POWER_8_5dBm (the default). Some
+        // Wi-Fi transmit power, e.g. WIFI_POWER_11dBm (the default). Some
         // ESP32 boards, including the Alfredo NoU3 and Rotini, send frames
-        // nothing can decode at full power (19.5 dBm), while BLE and receiving
-        // still work. If your board's RF works at full power, raise this for
-        // more range.
+        // nothing can decode above about 13 dBm, while BLE and receiving still
+        // work at any power. If your board's RF works at full power
+        // (WIFI_POWER_19_5dBm), raise this for more range.
         void setTxPower(wifi_power_t power);
         // Size of the buffer that absorbs radio hiccups. Call before begin().
         // Default 16384 bytes, about 150 ms of 20 channels at 1 kHz.
@@ -177,6 +177,7 @@ class AlfredoTelemetry : public Print {
         void handlePacket(const uint8_t *mac, const uint8_t *data, int length);
         void updateLink(uint32_t now);
         void setPeer(const uint8_t *mac);
+        void applyRadioRate();
         void sampleWatches();
         void sendHello();
         void sendStatus();
@@ -192,7 +193,7 @@ class AlfredoTelemetry : public Print {
         char _name[atlm::MAX_NAME_LENGTH + 1] = "";
         uint8_t _wifiChannel = 1;
         wifi_phy_rate_t _radioRate = WIFI_PHY_RATE_12M;
-        wifi_power_t _txPower = WIFI_POWER_8_5dBm;
+        wifi_power_t _txPower = WIFI_POWER_11dBm;
         size_t _bufferSize = 16384;
         uint32_t _minFrameUs = 1000;
         uint32_t _watchPeriodUs = 10000;

@@ -134,7 +134,21 @@ void AlfredoTelemetry::setWatchRate(float hz) {
     _watchPeriodUs = (uint32_t)(1000000.0f / hz);
 }
 
-void AlfredoTelemetry::setRadioRate(wifi_phy_rate_t rate) { _radioRate = rate; }
+void AlfredoTelemetry::setRadioRate(wifi_phy_rate_t rate) {
+    _radioRate = rate;
+    if (_hasPeer) applyRadioRate();  // takes effect on the current link too
+}
+
+void AlfredoTelemetry::applyRadioRate() {
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 0)
+    esp_now_rate_config_t rate = {};
+    rate.phymode = phyModeFor(_radioRate);
+    rate.rate = _radioRate;
+    esp_now_set_peer_rate_config(_dongleMac, &rate);
+#else
+    esp_wifi_config_espnow_rate(WIFI_IF_STA, _radioRate);
+#endif
+}
 
 void AlfredoTelemetry::setTxPower(wifi_power_t power) {
     _txPower = power;
@@ -510,15 +524,7 @@ void AlfredoTelemetry::setPeer(const uint8_t *mac) {
     peer.ifidx = WIFI_IF_STA;
     peer.encrypt = false;
     _hasPeer = esp_now_add_peer(&peer) == ESP_OK;
-
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 0)
-    esp_now_rate_config_t rate = {};
-    rate.phymode = phyModeFor(_radioRate);
-    rate.rate = _radioRate;
-    esp_now_set_peer_rate_config(mac, &rate);
-#else
-    esp_wifi_config_espnow_rate(WIFI_IF_STA, _radioRate);
-#endif
+    if (_hasPeer) applyRadioRate();
 }
 
 void AlfredoTelemetry::sampleWatches() {
