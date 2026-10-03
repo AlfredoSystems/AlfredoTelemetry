@@ -41,6 +41,11 @@ class AlfredoTelemetryDongle {
         // full power (WIFI_POWER_19_5dBm), raise this for more range.
         void setTxPower(wifi_power_t power) { _txPower = power; }
 
+        // Espressif's Long Range mode, for robots that use
+        // Telemetry.setLongRange(). Call before begin(). The dongle still
+        // hears normal frames too, so robots without it keep working.
+        void setLongRange(bool on = true) { _longRange = on; }
+
     private:
         void readHost();
         void handleHostFrame(uint8_t *frame, size_t length);
@@ -54,6 +59,7 @@ class AlfredoTelemetryDongle {
 
         wifi_phy_rate_t _radioRate = WIFI_PHY_RATE_1M_L;
         wifi_power_t _txPower = WIFI_POWER_11dBm;
+        bool _longRange = false;
         uint8_t _wifiChannel = 1;
         bool _started = false;
         uint8_t _state = atlm::DONGLE_IDLE;
@@ -67,6 +73,7 @@ class AlfredoTelemetryDongle {
         uint32_t _lastConnectMs = 0;
         uint32_t _lastHeartbeatMs = 0;
         bool _hostWasAlive = false;
+        uint32_t _lastReleaseMs = 0;
         bool _scanRequested = false;
 
         uint8_t _in[2 * atlm::MAX_PAYLOAD];  // COBS frame from the host being received

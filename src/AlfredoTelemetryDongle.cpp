@@ -26,6 +26,7 @@ uint8_t ownMac[6] = {0};
 volatile uint32_t lastRobotMs = 0;
 volatile uint32_t rxPackets = 0;
 volatile uint32_t radioHeard = 0;  // every ESP-NOW packet, from anyone: shows whether the radio hears anything
+volatile uint8_t lastRate = 0xFF, lastSigMode = 0xFF, lastMcs = 0xFF;  // PHY rate of the last data packet from the robot
 volatile uint32_t rxDropped = 0;
 volatile uint32_t txFailures = 0;
 
@@ -90,6 +91,11 @@ void onReceive(const esp_now_recv_info_t *info, const uint8_t *data, int length)
         }
     } else if (fromTarget && type < PKT_CONNECT) {
         lastRobotMs = millis();
+        if (type == PKT_DATA && info->rx_ctrl) {
+            lastRate = info->rx_ctrl->rate;
+            lastSigMode = info->rx_ctrl->sig_mode;
+            lastMcs = info->rx_ctrl->mcs;
+        }
         rxPackets = rxPackets + 1;
         uint8_t prefix[1] = {(uint8_t)rssi};
         queueForHost(SER_PACKET, prefix, 1, data, length);
@@ -190,6 +196,14 @@ bool AlfredoTelemetryDongle::begin(uint8_t wifiChannel, unsigned long baud) {
     WiFi.setSleep(false);  // the dongle never runs BLE, so keep the radio awake for the lowest latency
     esp_wifi_set_channel(_wifiChannel, WIFI_SECOND_CHAN_NONE);
     esp_wifi_set_max_tx_power(_txPower);  // see setTxPower(); only works once Wi-Fi has started
+    if (_longRange) {
+        // 802.11b/g/n plus LR: normal frames still work (HELLOs, scans, robots without LR)
+        if (esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N | WIFI_PROTOCOL_LR) != ESP_OK) {
+            log("long range mode isn't available on this board");
+        } else if (_radioRate != WIFI_PHY_RATE_LORA_250K && _radioRate != WIFI_PHY_RATE_LORA_500K) {
+            _radioRate = WIFI_PHY_RATE_LORA_250K;
+        }
+    }
     esp_wifi_get_mac(WIFI_IF_STA, _ownMac);
     memcpy(ownMac, _ownMac, 6);
 
@@ -259,6 +273,12 @@ void AlfredoTelemetryDongle::update() {
             lastRobotMs = 0;
         }
     }
+    // No page, but the robot is still sending to us (it missed the release,
+    // or it's finishing a backlog): keep telling it to stop.
+    if (!hostAlive && _state != DONGLE_IDLE && lastRobotMs != 0 && now - lastRobotMs < LINK_TIMEOUT_MS && now - _lastReleaseMs >= 1000) {
+        _lastReleaseMs = now;
+        radioSend(PKT_DISCONNECT, nullptr, 0);
+    }
     _hostWasAlive = hostAlive;
 
     if (_scanRequested) {
@@ -284,7 +304,7 @@ void AlfredoTelemetryDongle::update() {
 }
 
 void AlfredoTelemetryDongle::sendStatus() {
-    uint8_t p[34];
+    uint8_t p[38];
     p[0] = PROTOCOL_VERSION;
     uint8_t channel = _wifiChannel;
     wifi_second_chan_t second;
@@ -299,6 +319,12 @@ void AlfredoTelemetryDongle::sendStatus() {
     memcpy(p + 23, _ownMac, 6);
     p[29] = _stream;
     putU32(p + 30, radioHeard);
+    p[34] = lastRate;
+    p[35] = lastSigMode;
+    p[36] = lastMcs;
+    uint8_t protocol = 0;
+    esp_wifi_get_protocol(WIFI_IF_STA, &protocol);
+    p[37] = protocol;  // WIFI_PROTOCOL_* bits; 0x8 = LR
     writeFrame(SER_STATUS, p, sizeof(p));
 }
 

@@ -42,9 +42,13 @@ The viewer is a single local page with no install and no internet needed; uPlot 
 | `Telemetry.setMaxRate(hz)` | Most frames per second from `add()`/`send()` (default 1000). Faster passes are merged, keeping each channel's latest value, so a loop running at 20 kHz doesn't flood the radio. |
 | `Telemetry.setWatchRate(hz)` | `watch()` sample rate (default 100, max 1000). |
 | `Telemetry.setRadioRate(rate)` | Wi-Fi bitrate, default `WIFI_PHY_RATE_12M`. Faster rates like `WIFI_PHY_RATE_24M` carry more data and take less airtime, which helps when sharing the radio with BLE. Slower rates reach farther: `WIFI_PHY_RATE_6M` gains a few dB, `WIFI_PHY_RATE_1M_L` about 8 dB at 12 times the airtime. The dongle's rate is separate and defaults to 1 Mbps, since it only sends small packets. |
+| `Telemetry.setLongRange()` | Espressif's Long Range mode: several dB more sensitivity than 1 Mbps, at 250 kbps. See [Long range mode](#long-range-mode). |
 | `Telemetry.setTxPower(power)` | Wi-Fi transmit power, e.g. `WIFI_POWER_11dBm` (the default). See [Transmit power](#transmit-power). The dongle has `TelemetryDongle.setTxPower()`, called before `begin()`. |
 | `Telemetry.printStatus(Serial)` | Prints one line of link diagnostics over USB: whether telemetry started, the MAC address, the Wi-Fi channel and transmit power the radio is really using, HELLOs sent, pairing, and send failures. |
-| `Telemetry.setBufferSize(bytes)` | Buffer between `add()` and the radio. Call before `begin()`; the default is 16 KB. |
+| `Telemetry.setRetries(n)` | Resend a data packet the dongle didn't acknowledge up to n times (default 3). See [Reliability](#reliability). |
+| `Telemetry.setDropoutGrace(seconds)` | Keep recording this long after the dongle's heartbeats stop, and send the backlog when the link returns (default 30 s). |
+| `Telemetry.setAdaptiveRate(on)` | Step the bitrate down when sends keep failing and back up when the link is clean (default on). |
+| `Telemetry.setBufferSize(bytes)` | Buffer between `add()` and the radio. Call before `begin()`. Default: 1 MB in PSRAM when the build enables it, otherwise 64 KB (about 10 s of the IMU example), or 16 KB on boards short of RAM. |
 | `Telemetry.isConnected()` / `isStreaming()` | True while the page is paired, and while it has streaming on. |
 | `Telemetry.getFramesSent()` / `getFramesDropped()` | Frames queued, and frames lost because the buffer was full. |
 
@@ -91,6 +95,29 @@ Both the robot and the dongle transmit at **11 dBm** by default, not the ESP32's
 Telemetry.setTxPower(WIFI_POWER_19_5dBm);        // robot
 TelemetryDongle.setTxPower(WIFI_POWER_19_5dBm);  // dongle, before begin()
 ```
+
+## Reliability
+
+Three things turn a weak moment in the link into a delay instead of a hole in the data. All are on by default.
+
+- **Retries.** The dongle's radio acknowledges every data packet. One that isn't acknowledged is sent again, up to 3 times, with a short growing pause between tries (the driver's own fast retries happen first). At 60% loss per attempt, three retries bring it to about 13%. The Link panel shows the robot's retransmit count.
+- **Recording through dropouts.** If the dongle's heartbeats stop (out of range, behind a wall, a burst of interference), the robot keeps queueing frames for 30 s instead of stopping, probes the radio every 250 ms, and sends the backlog, in order, when the link comes back. The page's time axis stays continuous. The buffer defaults to 64 KB, about 10 s of the IMU example, or 1 MB (about 2.5 minutes) when the build enables PSRAM. The NoU3 board definition doesn't enable PSRAM, so it gets 64 KB; `setBufferSize()` can raise it as far as free RAM allows. `printStatus()` shows the size in use. Closing the page or clicking Unpair still stops the robot at once.
+- **Adaptive rate.** When more than 6 of the last 20 packets fail on the first try, the robot steps its bitrate down (12 → 6 → 2 → 1 Mbps, or LR 500 → 250 kbps), and after 300 clean packets in a row steps back up. The Link panel's **Robot: radio rate** shows the rate the dongle actually receives, with "(stepped down)" while that's in effect.
+
+Beyond software: get the dongle up and away from the laptop (a USB extension cable is often worth several dB), use a quiet channel (the ChannelSurvey example picks one), lower the bitrate or use [Long range mode](#long-range-mode) when the data rate allows, and raise the transmit power on boards whose RF handles it.
+
+## Long range mode
+
+For the most range, Espressif's Long Range (LR) mode trades speed for sensitivity: 250 kbps, which carries about 25 KB/s of telemetry, for several dB more than 1 Mbps. The IMU example's 6 KB/s fits easily. Enable it on both ends:
+
+```cpp
+Telemetry.setLongRange();        // robot, before begin()
+TelemetryDongle.setLongRange();  // dongle, before begin()
+```
+
+Both ends keep receiving normal frames too, so pairing (which uses 1 Mbps announcements) works at normal range and other robots and dongles aren't affected; only the paired data link switches to LR. Data packets are limited to 250 bytes in this mode. `Telemetry.setRadioRate(WIFI_PHY_RATE_LORA_500K)` after `setLongRange()` doubles the speed for a little less range.
+
+Measured between two NoU3s on the ESP32 Arduino core 3.3.10: the IMU example streamed 107 rows/s in LR mode with no loss, and the dongle's **Robot: radio rate** (in the Link panel) shows which rate the data really arrives at. On this core the radio accepts LR frames even without `TelemetryDongle.setLongRange()`, because LR is part of the default protocol set; keep the call anyway so it also works where that isn't the case. If a dongle can't decode LR, the robot pairs but every send fails, which `printStatus()` shows as send failures.
 
 ## Troubleshooting
 

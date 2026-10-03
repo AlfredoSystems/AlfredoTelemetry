@@ -74,6 +74,10 @@ void setup() {
   // The IMU only needs about 6 KB/s, so trade speed for range: 6 Mbps
   // reaches a few dB farther than the 12 Mbps default.
   Telemetry.setRadioRate(WIFI_PHY_RATE_6M);
+  // For the most range, use Long Range mode instead (several dB more than
+  // 1 Mbps, plenty of speed for the IMU). The dongle sketch must then call
+  // TelemetryDongle.setLongRange() too.
+  // Telemetry.setLongRange();
   telemetryStarted = Telemetry.begin("NoU3_IMU");
   Telemetry.printStatus(Serial);
 

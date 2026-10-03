@@ -590,6 +590,16 @@ function handleFrame(f) {
 
 // ---------------------------------------------------------------- dongle and pairing
 
+// Names the PHY rate the dongle saw on the robot's last data packet
+function phyRateName(rate, sigMode, mcs) {
+  const nonHt = { 0: "1 Mbps", 1: "2 Mbps", 2: "5.5 Mbps", 3: "11 Mbps", 5: "2 Mbps", 6: "5.5 Mbps", 7: "11 Mbps",
+    8: "48 Mbps", 9: "24 Mbps", 10: "12 Mbps", 11: "6 Mbps", 12: "54 Mbps", 13: "36 Mbps", 14: "18 Mbps", 15: "9 Mbps" };
+  if (sigMode === 1) return `MCS${mcs} (11n)`;
+  if (rate === 25) return "LR 250 kbps";  // Espressif Long Range, as the ESP32-S3 reports it
+  if (rate === 26) return "LR 500 kbps";
+  return nonHt[rate] ? nonHt[rate] : `rate ${rate} mode ${sigMode}`;
+}
+
 function handleDongleStatus(p) {
   if (p.length < 30) return;
   const v = new DataView(p.buffer, p.byteOffset, p.byteLength);
@@ -599,6 +609,7 @@ function handleDongleStatus(p) {
     rxPackets: v.getUint32(9, true), rxDropped: v.getUint32(13, true), txFailures: v.getUint32(17, true),
     maxPayload: v.getUint16(21, true), mac: macString(p.subarray(23, 29)), stream: p[29] !== 0,
     heard: p.length >= 34 ? v.getUint32(30, true) : null,
+    phy: p.length >= 37 && p[34] !== 0xFF ? phyRateName(p[34], p[35], p[36]) : null,
   };
   sendFrame(SER_PONG);
   if (first) {
@@ -626,15 +637,11 @@ function handleSeen(p) {
   S.robots.set(mac, { name, rssi, paired, pairedWith, lastSeen: performance.now() });
   if (!known || known.name !== name || known.paired !== paired || known.pairedWith !== pairedWith) renderRobotSelect();
 
-  if (S.robot && S.robot.mac === mac && !paired) {
-    // Our robot is looking for a dongle again: it reset or timed out. The
-    // dongle re-pairs on its own; channel numbers may change, so drop the schema.
-    S.robot.name = name;
-    S.schema = [];
-    S.schemaPending = null;
-    S.tunablesVersion = -1;
-    S.clock.reset = true;
-  }
+  // Our robot announcing itself unpaired means the dongle re-pairs on its
+  // own. Don't touch the clock or schema here: the robot may be recording
+  // through a dropout and will send that backlog with its old timestamps.
+  // A real reboot shows up as an uptime drop in its STATUS.
+  if (S.robot && S.robot.mac === mac) S.robot.name = name;
   autoPair();
 }
 
@@ -738,12 +745,13 @@ function handleRobotPacket(p) {
 }
 
 function handleStatus(b, v) {
-  if (b.length < 27) return;
+  if (b.length < 33) return;
   const s = {
     schemaVersion: v.getUint16(0, true), tunablesVersion: v.getUint16(2, true), uptimeMs: v.getUint32(4, true),
     framesSent: v.getUint32(8, true), framesDropped: v.getUint32(12, true), txFailures: v.getUint32(16, true),
     streaming: b[20] !== 0, bufferUse: b[21], payload: v.getUint16(22, true),
-    channels: b[24], tunables: b[25], name: decoder.decode(b.subarray(27, 27 + b[26])),
+    channels: b[24], tunables: b[25], retransmits: v.getUint32(26, true), rate: b[30], steppedDown: (b[31] & 1) !== 0,
+    name: decoder.decode(b.subarray(33, 33 + b[32])),
   };
   const r = S.robot;
   if (r.status && s.uptimeMs < r.status.uptimeMs) S.clock.reset = true;  // rebooted
@@ -830,7 +838,7 @@ function mapTime(raw) {
     c.reset = false;
   }
   const d = (raw - c.refRaw) | 0;
-  if (d < -5e6 || d > 60e6) { c.reset = true; return mapTime(raw); }
+  if (d < -5e6 || d > 900e6) { c.reset = true; return mapTime(raw); }  // 15 min: longer than any dropout backlog
   const us = c.refUs + d;
   if (d > 0) { c.refRaw = raw; c.refUs = us; }
   if (c.lastUs === null || us > c.lastUs) { c.lastUs = us; c.lastHostMs = performance.now(); }
@@ -1389,8 +1397,10 @@ function updateStats() {
     ["Robot: frames dropped", st ? st.framesDropped.toLocaleString() : "—"],
     ["Robot: buffer use", st ? st.bufferUse + " %" : "—"],
     ["Robot: send failures", st ? st.txFailures.toLocaleString() : "—"],
+    ["Robot: retransmits", st ? st.retransmits.toLocaleString() : "—"],
     ["Robot: uptime", st ? formatDuration(st.uptimeMs / 1000) : "—"],
     ["Robot: packet size", st ? st.payload + " B" : "—"],
+    ["Robot: radio rate", d && d.phy ? d.phy + (st && st.steppedDown ? " (stepped down)" : "") : "—"],
     ["Dongle: packets heard", d && d.heard != null ? d.heard.toLocaleString() : "—"],
     ["Dongle: dropped", d ? d.rxDropped.toLocaleString() : "—"],
     ["Serial errors", s.crcErrors.toLocaleString()],

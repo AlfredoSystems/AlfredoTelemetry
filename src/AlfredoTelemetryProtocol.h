@@ -40,7 +40,9 @@ struct __attribute__((packed)) PacketHeader {
 //         u16 schema version, u16 tunables version, u32 uptime ms,
 //         u32 frames sent, u32 frames dropped, u32 tx failures,
 //         u8 streaming, u8 buffer use %, u16 payload size,
-//         u8 channel count, u8 tunable count, u8 name length, name
+//         u8 channel count, u8 tunable count, u32 retransmits,
+//         u8 active radio rate (wifi_phy_rate_t), u8 flags (bit 0: rate stepped down),
+//         u8 name length, name
 // SCHEMA  u16 schema version, u8 channel count,
 //         then per channel: u8 id, u8 type, u8 name length, name
 // DATA    u16 schema version, then frames: u32 micros, u8 n, n x (u8 id, 4 byte value)
@@ -90,7 +92,9 @@ const uint8_t TYPE_BOOL = 3;
 // STATUS  u8 protocol, u8 wifi channel, u8 state (DONGLE_*), u8[6] target mac,
 //         u32 packets received, u32 packets dropped (dongle buffer full),
 //         u32 tx failures, u16 max payload, u8[6] dongle mac, u8 streaming requested,
-//         u32 ESP-NOW packets heard from anyone
+//         u32 ESP-NOW packets heard from anyone,
+//         u8 rate, u8 sig_mode, u8 mcs of the last DATA packet (rx_ctrl fields, 0xFF = none yet),
+//         u8 dongle Wi-Fi protocol bitmap (WIFI_PROTOCOL_*; 0x8 = LR enabled)
 // LOG     raw characters from the dongle itself
 const uint8_t SER_SEEN = 0x81;
 const uint8_t SER_PACKET = 0x82;

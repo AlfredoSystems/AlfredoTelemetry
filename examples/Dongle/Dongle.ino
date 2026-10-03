@@ -19,6 +19,7 @@
 #include <AlfredoTelemetryDongle.h>
 
 void setup() {
+  // TelemetryDongle.setLongRange();  // for robots that call Telemetry.setLongRange()
   TelemetryDongle.begin(1);  // Wi-Fi channel 1
 }
 

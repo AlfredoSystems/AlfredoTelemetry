@@ -17,6 +17,10 @@ const size_t MAX_FRAME_SIZE = 5 + 5 * MAX_CHANNELS;  // u32 time, u8 count, coun
 const uint32_t DATA_FLUSH_MS = 10;     // longest a partly full data packet waits for more frames
 const uint32_t STALE_FRAME_US = 20000;  // an open frame with no add() for this long is sent on its own
 const size_t TEXT_BUFFER_SIZE = 2048;
+const uint32_t PROBE_PERIOD_MS = 250;    // how often to try the radio while the link is lost
+const uint16_t RATE_WINDOW = 20;         // adaptive rate: packets per decision
+const uint16_t RATE_FAILS_TO_DROP = 6;   // first-try failures per window that step the rate down
+const uint16_t RATE_CLEAN_TO_RISE = 150; // first-try successes in a row that step it back up (a few seconds)
 
 // Control packets from the dongle are small; anything bigger isn't ours.
 struct RxPacket {
@@ -61,6 +65,18 @@ wifi_phy_mode_t phyModeFor(wifi_phy_rate_t rate) {
 void putU16(uint8_t *p, uint16_t v) { memcpy(p, &v, 2); }
 void putU32(uint8_t *p, uint32_t v) { memcpy(p, &v, 4); }
 
+// Approximate speed of a wifi_phy_rate_t, to order the adaptive-rate ladder
+uint32_t rateKbps(wifi_phy_rate_t rate) {
+    static const uint16_t legacy[16] = {1000, 2000, 5500, 11000, 0, 2000, 5500, 11000, 48000, 24000, 12000, 6000, 54000, 36000, 18000, 9000};
+    static const uint16_t mcs[8] = {6500, 13000, 19500, 26000, 39000, 52000, 58500, 65000};
+    uint8_t r = rate;
+    if (r < 16) return legacy[r];
+    if (r >= 0x10 && r <= 0x1F) return mcs[(r - 0x10) & 7];
+    if (r == WIFI_PHY_RATE_LORA_250K) return 250;
+    if (r == WIFI_PHY_RATE_LORA_500K) return 500;
+    return 1000;
+}
+
 }  // namespace
 
 bool AlfredoTelemetry::begin(const char *robotName, uint8_t wifiChannel) {
@@ -82,6 +98,7 @@ bool AlfredoTelemetry::begin(const char *robotName, uint8_t wifiChannel) {
     // off can abort. The robot mostly transmits, which modem sleep doesn't delay.
     if (!WiFi.isConnected()) _channelError = esp_wifi_set_channel(_wifiChannel, WIFI_SECOND_CHAN_NONE);
     _txPowerError = esp_wifi_set_max_tx_power(_txPower);  // only works once Wi-Fi has started
+    if (_longRange) applyProtocol();
 
     esp_err_t err = esp_now_init();
     if (err != ESP_OK) {
@@ -93,7 +110,17 @@ bool AlfredoTelemetry::begin(const char *robotName, uint8_t wifiChannel) {
 
     rxQueue = xQueueCreate(16, sizeof(RxPacket));
     txDone = xSemaphoreCreateBinary();
-    _frameBuffer = xRingbufferCreate(_bufferSize, RINGBUF_TYPE_NOSPLIT);
+    // The frame buffer absorbs radio hiccups and whole dropouts. With PSRAM
+    // it can hold minutes of data; otherwise 16 KB is a few seconds.
+    if (_bufferSize == 0) {
+        if (psramFound()) _bufferSize = 1u << 20;
+        else _bufferSize = ESP.getFreeHeap() > 200000 ? 65536 : 16384;  // about 10 s or 2.5 s of the IMU example
+    }
+    if (_bufferSize > 65536 && psramFound()) _frameBuffer = xRingbufferCreateWithCaps(_bufferSize, RINGBUF_TYPE_NOSPLIT, MALLOC_CAP_SPIRAM);
+    if (_frameBuffer == nullptr) {
+        if (_bufferSize > 65536) _bufferSize = 16384;  // no PSRAM after all
+        _frameBuffer = xRingbufferCreate(_bufferSize, RINGBUF_TYPE_NOSPLIT);
+    }
     _textBuffer = xRingbufferCreate(TEXT_BUFFER_SIZE, RINGBUF_TYPE_NOSPLIT);
     if (!rxQueue || !txDone || !_frameBuffer || !_textBuffer) {
         _error = "out of memory";
@@ -136,17 +163,92 @@ void AlfredoTelemetry::setWatchRate(float hz) {
 
 void AlfredoTelemetry::setRadioRate(wifi_phy_rate_t rate) {
     _radioRate = rate;
+    buildLadder();
     if (_hasPeer) applyRadioRate();  // takes effect on the current link too
+}
+
+void AlfredoTelemetry::setRetries(uint8_t retries) { _retries = retries > 10 ? 10 : retries; }
+
+void AlfredoTelemetry::setDropoutGrace(float seconds) { _graceMs = seconds <= 0 ? 0 : (uint32_t)(seconds * 1000.0f); }
+
+void AlfredoTelemetry::setAdaptiveRate(bool on) {
+    _adaptive = on;
+    buildLadder();
+    if (_hasPeer) applyRadioRate();
+}
+
+// The rates the adaptive logic may fall back to, fastest first
+void AlfredoTelemetry::buildLadder() {
+    _ladderCount = 0;
+    _ladder[_ladderCount++] = _radioRate;
+    if (_adaptive) {
+        if (_radioRate == WIFI_PHY_RATE_LORA_500K) {
+            _ladder[_ladderCount++] = WIFI_PHY_RATE_LORA_250K;
+        } else if (_radioRate != WIFI_PHY_RATE_LORA_250K) {
+            const wifi_phy_rate_t steps[] = {WIFI_PHY_RATE_6M, WIFI_PHY_RATE_2M_L, WIFI_PHY_RATE_1M_L};
+            for (wifi_phy_rate_t step : steps) {
+                if (rateKbps(step) < rateKbps(_radioRate)) _ladder[_ladderCount++] = step;
+            }
+        }
+    }
+    _rateIndex = 0;
+    _activeRate = _radioRate;
+    _firstTryCount = _firstTryFails = _cleanStreak = 0;
+}
+
+// Called once per data packet with whether the first try was acknowledged.
+void AlfredoTelemetry::noteDataResult(bool firstTryOk) {
+    if (_ladderCount < 2) return;
+    if (firstTryOk) {
+        if (_cleanStreak < 0xFFFF) _cleanStreak++;
+    } else {
+        _cleanStreak = 0;
+        _firstTryFails++;
+    }
+    if (++_firstTryCount >= RATE_WINDOW) {
+        if (_firstTryFails >= RATE_FAILS_TO_DROP && _rateIndex + 1 < _ladderCount) {
+            _rateIndex++;
+            _activeRate = _ladder[_rateIndex];
+            applyRadioRate();
+        }
+        _firstTryCount = _firstTryFails = 0;
+    }
+    if (_rateIndex > 0 && _cleanStreak >= RATE_CLEAN_TO_RISE) {
+        _rateIndex--;
+        _activeRate = _ladder[_rateIndex];
+        applyRadioRate();
+        _cleanStreak = 0;
+    }
+}
+
+void AlfredoTelemetry::setLongRange(bool on) {
+    _longRange = on;
+    bool lrRate = _radioRate == WIFI_PHY_RATE_LORA_250K || _radioRate == WIFI_PHY_RATE_LORA_500K;
+    if (on && !lrRate) _radioRate = WIFI_PHY_RATE_LORA_250K;
+    if (!on && lrRate) _radioRate = WIFI_PHY_RATE_12M;
+    buildLadder();
+    if (_started) {
+        applyProtocol();
+        if (_hasPeer) applyRadioRate();
+    }
+}
+
+// 802.11b/g/n plus LR: the radio still hears normal frames (HELLOs, and
+// dongles that don't use LR), and can send and receive LR frames.
+void AlfredoTelemetry::applyProtocol() {
+    uint8_t protocol = WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N;
+    if (_longRange) protocol |= WIFI_PROTOCOL_LR;
+    _protocolError = esp_wifi_set_protocol(WIFI_IF_STA, protocol);
 }
 
 void AlfredoTelemetry::applyRadioRate() {
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 0)
     esp_now_rate_config_t rate = {};
-    rate.phymode = phyModeFor(_radioRate);
-    rate.rate = _radioRate;
-    esp_now_set_peer_rate_config(_dongleMac, &rate);
+    rate.phymode = phyModeFor(_activeRate);
+    rate.rate = _activeRate;
+    _rateError = esp_now_set_peer_rate_config(_dongleMac, &rate);
 #else
-    esp_wifi_config_espnow_rate(WIFI_IF_STA, _radioRate);
+    _rateError = esp_wifi_config_espnow_rate(WIFI_IF_STA, _activeRate);
 #endif
 }
 
@@ -385,7 +487,7 @@ size_t AlfredoTelemetry::write(uint8_t c) {
     portEXIT_CRITICAL(&_lock);
 
     // Empty lines are kept: the page shows one per packet item.
-    if ((length || c == '\n') && _connected) {
+    if ((length || c == '\n') && (_connected || _streaming)) {
         if (length == 0) line[length++] = ' ';
         xRingbufferSend(_textBuffer, line, length, 0);
     }
@@ -416,11 +518,13 @@ void AlfredoTelemetry::taskLoop() {
 
         if (!_connected) {
             if (now - _lastHelloMs >= HELLO_PERIOD_MS) sendHello();
-            _packetLength = 0;
-            size_t size;
-            void *item;
-            while ((item = xRingbufferReceive(_frameBuffer, &size, 0))) vRingbufferReturnItem(_frameBuffer, item);
-            while ((item = xRingbufferReceive(_textBuffer, &size, 0))) vRingbufferReturnItem(_textBuffer, item);
+            if (_streaming) {
+                // Link lost but within the grace period: keep recording, and
+                // keep trying the radio so the backlog goes as soon as it can.
+                sampleWatches();
+                if (_frameMask && micros() - _lastAddUs > STALE_FRAME_US) endFrame(true);
+                sendData();
+            }
             continue;
         }
 
@@ -434,11 +538,6 @@ void AlfredoTelemetry::taskLoop() {
             sampleWatches();
             if (_frameMask && micros() - _lastAddUs > STALE_FRAME_US) endFrame(true);
             sendData();
-        } else {
-            _packetLength = 0;
-            size_t size;
-            void *item;
-            while ((item = xRingbufferReceive(_frameBuffer, &size, 0))) vRingbufferReturnItem(_frameBuffer, item);
         }
         sendText();
     }
@@ -448,7 +547,9 @@ void AlfredoTelemetry::handlePacket(const uint8_t *mac, const uint8_t *data, int
     const uint8_t type = data[1];
     const uint8_t *payload = data + HEADER_SIZE;
     const int payloadLength = length - HEADER_SIZE;
-    const bool fromDongle = _connected && memcmp(mac, _dongleMac, 6) == 0;
+    // The paired dongle, even while its heartbeats have lapsed: one heartbeat
+    // re-links without a new CONNECT.
+    const bool fromDongle = _hasPeer && memcmp(mac, _dongleMac, 6) == 0;
     uint32_t now = millis();
 
     if (type == PKT_CONNECT) {
@@ -461,9 +562,12 @@ void AlfredoTelemetry::handlePacket(const uint8_t *mac, const uint8_t *data, int
         if (payloadLength >= 3) memcpy(&donglePayload, payload + 1, 2);
         setPeer(mac);
         _payloadSize = donglePayload < MAX_PAYLOAD ? donglePayload : MAX_PAYLOAD;
+        if (_longRange && _payloadSize > V1_PAYLOAD) _payloadSize = V1_PAYLOAD;  // 250 B is 8 ms of airtime at 250 kbps
         if (_payloadSize < 64) _payloadSize = 64;
-        _packetLength = 0;
+        // A backlog recorded during a dropout is for this same dongle; keep it.
+        if (!fromDongle || _packetLength > _payloadSize - HEADER_SIZE) discardFrames();
         _connected = true;
+        _linkLost = false;
         _lastHeardMs = now;
         _schemaSent = 0xFFFF;
         _tunablesRequested = true;
@@ -484,10 +588,11 @@ void AlfredoTelemetry::handlePacket(const uint8_t *mac, const uint8_t *data, int
             _passMask = 0;
             portEXIT_CRITICAL(&_lock);
             _nextWatchUs = micros();
-            _packetLength = 0;
+            discardFrames();
         }
         _streamRequested = want;
-        _streaming = want;
+        _connected = true;
+        _linkLost = false;
     } else if (type == PKT_REQUEST && payloadLength >= 1) {
         if (payload[0] & REQUEST_SCHEMA) _schemaSent = 0xFFFF;
         if (payload[0] & REQUEST_TUNABLES) _tunablesRequested = true;
@@ -501,16 +606,41 @@ void AlfredoTelemetry::handlePacket(const uint8_t *mac, const uint8_t *data, int
         }
         _tunablesRequested = true;  // echo the new value back
     } else if (type == PKT_DISCONNECT) {
+        // An explicit release (the page closed or unpaired): stop right away.
         _connected = false;
-        _streaming = false;
+        _streamRequested = false;
+        _linkLost = false;
     }
 }
 
 void AlfredoTelemetry::updateLink(uint32_t now) {
     if (_connected && now - _lastHeardMs > LINK_TIMEOUT_MS) {
         _connected = false;
-        _streaming = false;
+        if (_streamRequested) {
+            _linkLost = true;
+            _linkLostMs = now;
+            _nextProbeMs = now;
+        }
     }
+    if (_linkLost && now - _linkLostMs > _graceMs) {
+        _linkLost = false;
+        _streamRequested = false;
+    }
+    bool streaming = _streamRequested && (_connected || _linkLost);
+    if (_streaming && !streaming) discardFrames();
+    _streaming = streaming;
+}
+
+// Throws away queued frames and the packet being built
+void AlfredoTelemetry::discardFrames() {
+    if (_carryItem) {
+        vRingbufferReturnItem(_frameBuffer, _carryItem);
+        _carryItem = nullptr;
+    }
+    size_t size;
+    void *item;
+    while ((item = xRingbufferReceive(_frameBuffer, &size, 0))) vRingbufferReturnItem(_frameBuffer, item);
+    _packetLength = 0;
 }
 
 void AlfredoTelemetry::setPeer(const uint8_t *mac) {
@@ -549,27 +679,41 @@ void AlfredoTelemetry::sampleWatches() {
 
 // ---------------------------------------------------------------- radio packets
 
-bool AlfredoTelemetry::radioSend(const uint8_t *mac, uint8_t type, const uint8_t *payload, size_t length) {
+bool AlfredoTelemetry::radioSend(const uint8_t *mac, uint8_t type, const uint8_t *payload, size_t length, uint8_t retries,
+                                 bool *firstTryOk) {
     // HELLOs have their own count so the host's loss count only sees packets meant for it.
-    PacketHeader header = {MAGIC, type, type == PKT_HELLO ? _helloSeq++ : _seq++};
+    // The sequence number only advances once a packet is delivered, so a
+    // packet sent again later keeps its number and the page doesn't count it
+    // as lost. (A delivered-but-unacknowledged packet arrives twice; the page
+    // merges rows with the same timestamp.)
+    PacketHeader header = {MAGIC, type, type == PKT_HELLO ? _helloSeq : _seq};
     memcpy(_tx, &header, HEADER_SIZE);
     if (payload != _tx + HEADER_SIZE) memcpy(_tx + HEADER_SIZE, payload, length);
+    if (firstTryOk) *firstTryOk = false;
 
-    // One packet in flight at a time: wait for the send callback, which
-    // comes after the dongle's ACK (or after the driver gives up retrying).
-    xSemaphoreTake(txDone, 0);
-    esp_err_t err = esp_now_send(mac, _tx, HEADER_SIZE + length);
-    if (err == ESP_OK) {
-        if (xSemaphoreTake(txDone, pdMS_TO_TICKS(50)) != pdTRUE) err = ESP_ERR_TIMEOUT;
-        else if (!txOk) err = ESP_FAIL;
-    }
-    if (err != ESP_OK) {
+    for (uint8_t attempt = 0;; attempt++) {
+        // One packet in flight at a time: wait for the send callback, which
+        // comes after the dongle's ACK (or after the driver gives up retrying).
+        xSemaphoreTake(txDone, 0);
+        esp_err_t err = esp_now_send(mac, _tx, HEADER_SIZE + length);
+        if (err == ESP_OK) {
+            if (xSemaphoreTake(txDone, pdMS_TO_TICKS(50)) != pdTRUE) err = ESP_ERR_TIMEOUT;
+            else if (!txOk) err = ESP_FAIL;
+        }
+        if (err == ESP_OK) {
+            _txSuccesses = _txSuccesses + 1;
+            if (type == PKT_HELLO) _helloSeq++; else _seq++;
+            if (attempt == 0 && firstTryOk) *firstTryOk = true;
+            return true;
+        }
         _lastSendError = err;
         _txFailures = _txFailures + 1;
-        return false;
+        if (attempt >= retries) return false;
+        // The driver already retried quickly; waiting a little longer each
+        // time rides out a brief fade or a burst of interference.
+        _retransmits = _retransmits + 1;
+        vTaskDelay(pdMS_TO_TICKS(20 * (attempt + 1)));
     }
-    _txSuccesses = _txSuccesses + 1;
-    return true;
 }
 
 void AlfredoTelemetry::printStatus(Print &out) {
@@ -592,15 +736,23 @@ void AlfredoTelemetry::printStatus(Print &out) {
     esp_wifi_get_max_tx_power(&power);
     out.printf(", tx %.1f dBm", power / 4.0f);
     if (_txPowerError != ESP_OK) out.printf(" [set tx power failed: %s]", esp_err_to_name(_txPowerError));
+    if (_longRange) out.printf(", long range %s", _radioRate == WIFI_PHY_RATE_LORA_500K ? "500k" : "250k");
+    if (_protocolError != ESP_OK) out.printf(" [set protocol failed: %s]", esp_err_to_name(_protocolError));
+    out.printf(", rate 0x%02x", _activeRate);
+    if (_activeRate != _radioRate) out.printf(" (stepped down from 0x%02x)", _radioRate);
+    if (_rateError != ESP_OK) out.printf(" [set rate failed: %s]", esp_err_to_name(_rateError));
+    out.printf(", buffer %u KB%s", (unsigned)(_bufferSize / 1024), psramFound() ? " in PSRAM" : "");
     out.printf(", HELLOs %u", _helloSeq);
     if (_connected) {
         out.printf(" | paired with %02x:%02x:%02x:%02x:%02x:%02x, %s", _dongleMac[0], _dongleMac[1], _dongleMac[2], _dongleMac[3],
                    _dongleMac[4], _dongleMac[5], _streaming ? "streaming" : "not streaming");
+    } else if (_streaming) {
+        out.printf(" | link lost %lu s ago, still recording", (unsigned long)((millis() - _linkLostMs) / 1000));
     } else {
         out.print(" | not paired");
     }
-    out.printf(" | frames %lu sent, %lu dropped | sends %lu ok, %lu failed", (unsigned long)_framesSent,
-               (unsigned long)_framesDropped, (unsigned long)_txSuccesses, (unsigned long)_txFailures);
+    out.printf(" | frames %lu sent, %lu dropped | sends %lu ok, %lu failed, %lu retries", (unsigned long)_framesSent,
+               (unsigned long)_framesDropped, (unsigned long)_txSuccesses, (unsigned long)_txFailures, (unsigned long)_retransmits);
     if (_lastSendError != ESP_OK) {
         esp_err_t e = _lastSendError;
         out.printf(" (last: %s)", e == ESP_ERR_TIMEOUT ? "no send callback" : e == ESP_FAIL ? "not delivered" : esp_err_to_name(e));
@@ -645,9 +797,12 @@ void AlfredoTelemetry::sendStatus() {
     putU16(p + 22, _payloadSize);
     p[24] = _channelCount;
     p[25] = _tunableCount;
-    p[26] = nameLength;
-    memcpy(p + 27, _name, nameLength);
-    radioSend(_dongleMac, PKT_STATUS, p, 27 + nameLength);
+    putU32(p + 26, _retransmits);
+    p[30] = _activeRate;
+    p[31] = _rateIndex > 0 ? 1 : 0;  // bit 0: rate stepped down
+    p[32] = nameLength;
+    memcpy(p + 33, _name, nameLength);
+    radioSend(_dongleMac, PKT_STATUS, p, 33 + nameLength);
 }
 
 // Sends every channel, split over as many packets as it takes.
@@ -671,7 +826,7 @@ void AlfredoTelemetry::sendSchema() {
             length += nameLength;
             i++;
         }
-        if (!radioSend(_dongleMac, PKT_SCHEMA, p, length)) return;  // retried next pass
+        if (!radioSend(_dongleMac, PKT_SCHEMA, p, length, _retries)) return;  // retried next pass
     } while (i < count);
     _schemaSent = version;
 }
@@ -701,7 +856,7 @@ void AlfredoTelemetry::sendTunables() {
             length += nameLength;
             i++;
         }
-        radioSend(_dongleMac, PKT_TUNABLES, p, length);
+        radioSend(_dongleMac, PKT_TUNABLES, p, length, _retries);
     } while (i < count);
 }
 
@@ -719,50 +874,77 @@ void AlfredoTelemetry::sendText() {
         p[length++] = '\n';
         vRingbufferReturnItem(_textBuffer, item);
     }
-    if (length) radioSend(_dongleMac, PKT_TEXT, p, length);
+    if (length) radioSend(_dongleMac, PKT_TEXT, p, length, _retries);
 }
 
 // Packs queued frames into DATA packets. A packet goes out when it's full,
-// or DATA_FLUSH_MS after its first frame, whichever comes first.
+// or DATA_FLUSH_MS after its first frame, whichever comes first. A packet
+// that can't be sent is kept and tried again, so nothing is lost in order.
 void AlfredoTelemetry::sendData() {
     const size_t room = _payloadSize - HEADER_SIZE;
     // Only a few packets per call, so heartbeats and requests from the
     // dongle keep getting handled even when frames arrive faster than the
     // radio can send them.
-    uint16_t sentBefore = _seq;
-    size_t size;
-    uint8_t *item;
-    while ((uint16_t)(_seq - sentBefore) < 4 && (item = (uint8_t *)xRingbufferReceive(_frameBuffer, &size, 0))) {
-        uint8_t n = size >= 5 ? item[4] : 0;
-        const uint8_t *values = item + 5;
+    for (int sent = 0; sent < 4;) {
+        if (_packetLength > 0 && room - _packetLength < 10) {  // full
+            if (!flushPacket()) return;
+            sent++;
+            continue;
+        }
+        if (_carryItem == nullptr) {
+            size_t size;
+            _carryItem = (uint8_t *)xRingbufferReceive(_frameBuffer, &size, 0);
+            if (_carryItem == nullptr) break;
+            _carryLeft = size >= 5 ? _carryItem[4] : 0;
+            _carryValues = _carryItem + 5;
+        }
+        if (_carryLeft == 0) {
+            vRingbufferReturnItem(_frameBuffer, _carryItem);
+            _carryItem = nullptr;
+            continue;
+        }
+        if (_packetLength == 0) {
+            _packetLength = 2;  // room for the schema version
+            _packetStartMs = millis();
+        }
         // A frame that doesn't fit in what's left of the packet is split;
         // each piece carries the frame's timestamp.
-        while (n > 0) {
-            if (_packetLength == 0) {
-                _packetLength = 2;  // room for the schema version
-                _packetStartMs = millis();
-            }
-            size_t free = room - _packetLength;
-            if (free < 10) {
-                putU16(_packet, _schemaSent);
-                radioSend(_dongleMac, PKT_DATA, _packet, _packetLength);
-                _packetLength = 0;
-                continue;
-            }
-            uint8_t k = (free - 5) / 5;
-            if (k > n) k = n;
-            memcpy(_packet + _packetLength, item, 4);
-            _packet[_packetLength + 4] = k;
-            memcpy(_packet + _packetLength + 5, values, k * 5);
-            _packetLength += 5 + k * 5;
-            values += k * 5;
-            n -= k;
+        size_t free = room - _packetLength;
+        uint8_t k = free >= 10 ? (free - 5) / 5 : 0;
+        if (k == 0) {
+            if (!flushPacket()) return;
+            sent++;
+            continue;
         }
-        vRingbufferReturnItem(_frameBuffer, item);
+        if (k > _carryLeft) k = _carryLeft;
+        memcpy(_packet + _packetLength, _carryItem, 4);
+        _packet[_packetLength + 4] = k;
+        memcpy(_packet + _packetLength + 5, _carryValues, k * 5);
+        _packetLength += 5 + k * 5;
+        _carryValues += k * 5;
+        _carryLeft -= k;
     }
-    if (_packetLength > 2 && millis() - _packetStartMs >= DATA_FLUSH_MS) {
-        putU16(_packet, _schemaSent);
-        radioSend(_dongleMac, PKT_DATA, _packet, _packetLength);
+    if (_packetLength > 2 && millis() - _packetStartMs >= DATA_FLUSH_MS) flushPacket();
+}
+
+// Sends the packet being built. Returns false if it couldn't be delivered;
+// the packet stays for the next try. While the link is lost, it only tries
+// every PROBE_PERIOD_MS so the radio isn't busy failing.
+bool AlfredoTelemetry::flushPacket() {
+    if (_packetLength <= 2) {
         _packetLength = 0;
+        return true;
     }
+    uint32_t now = millis();
+    if (!_connected && (int32_t)(now - _nextProbeMs) < 0) return false;
+    putU16(_packet, _schemaSent);
+    bool firstTry = false;
+    bool ok = radioSend(_dongleMac, PKT_DATA, _packet, _packetLength, _connected ? _retries : 0, &firstTry);
+    noteDataResult(firstTry);
+    if (!ok) {
+        if (!_connected) _nextProbeMs = now + PROBE_PERIOD_MS;
+        return false;
+    }
+    _packetLength = 0;
+    return true;
 }
