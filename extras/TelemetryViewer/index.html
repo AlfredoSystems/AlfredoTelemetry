@@ -167,6 +167,7 @@ kbd { font: 11px ui-monospace, Consolas, monospace; border: 1px solid var(--bord
       <span class="lbl">Dongle</span>
       <div class="row">
         <button id="connect" class="primary">Connect</button>
+        <button id="usb" hidden title="Phones: talk to the dongle over USB directly (WebUSB)">USB</button>
         <select id="baud" title="Only matters for dongles with a USB-to-UART chip">
           <option value="115200">115200</option>
           <option value="921600" selected>921600</option>
@@ -494,8 +495,8 @@ const S = {
 // ---------------------------------------------------------------- serial link
 
 async function connectDongle() {
-  if (!("serial" in navigator)) return;
   if (S.port) { await disconnectDongle(); return; }
+  if (!("serial" in navigator)) return;
   let port;
   try {
     port = await navigator.serial.requestPort();
@@ -519,9 +520,14 @@ async function disconnectDongle() {
   const port = S.port;
   if (!port) return;
   S.port = null;
-  try { if (S.reader) await S.reader.cancel(); } catch (e) {}
-  try { S.writer.releaseLock(); } catch (e) {}
-  try { await port.close(); } catch (e) {}
+  if (S.usb) {
+    try { await S.usb.device.close(); } catch (e) {}
+    S.usb = null;
+  } else {
+    try { if (S.reader) await S.reader.cancel(); } catch (e) {}
+    try { S.writer.releaseLock(); } catch (e) {}
+    try { await port.close(); } catch (e) {}
+  }
   S.writer = null;
   S.dongle = null;
   S.robot = null;
@@ -548,6 +554,69 @@ async function readLoop(port) {
     }
   }
   if (S.port === port) disconnectDongle();
+}
+
+// ---- WebUSB transport, for phones. Chrome for Android has had WebUSB since
+// version 61, and nothing on Android claims the dongle's CDC serial interface,
+// so the page can drive it directly: the CDC data interface's bulk endpoints
+// carry the bytes, and one control request sets DTR so the board sends.
+async function connectUsb() {
+  if (S.port) { await disconnectDongle(); return; }
+  if (!("usb" in navigator)) return;
+  let device, epIn, epOut;
+  try {
+    device = await navigator.usb.requestDevice({ filters: [{ classCode: 0x0A }, { vendorId: 0xAFD0 }, { vendorId: 0x303A }] });
+    await device.open();
+    if (!device.configuration) await device.selectConfiguration(1);
+    let control = null, data = null;
+    for (const iface of device.configuration.interfaces) {
+      const alt = iface.alternates[0];
+      if (alt.interfaceClass === 0x02 && control === null) control = iface.interfaceNumber;
+      if (alt.interfaceClass === 0x0A && data === null) {
+        data = iface.interfaceNumber;
+        for (const ep of alt.endpoints) {
+          if (ep.type !== "bulk") continue;
+          if (ep.direction === "in") epIn = ep.endpointNumber; else epOut = ep.endpointNumber;
+        }
+      }
+    }
+    if (data === null || epIn === undefined || epOut === undefined) throw new Error("this device has no USB serial (CDC) interface");
+    if (control !== null) { try { await device.claimInterface(control); } catch (e) {} }
+    await device.claimInterface(data);
+    if (control !== null) {
+      // SET_LINE_CODING (ignored by native-USB boards, needed by UART bridges), then DTR on, RTS off
+      const coding = new Uint8Array(7);
+      new DataView(coding.buffer).setUint32(0, Number($("baud").value), true);
+      coding[6] = 8;
+      try { await device.controlTransferOut({ requestType: "class", recipient: "interface", request: 0x20, value: 0, index: control }, coding); } catch (e) {}
+      try { await device.controlTransferOut({ requestType: "class", recipient: "interface", request: 0x22, value: 1, index: control }); } catch (e) {}
+    }
+  } catch (e) {
+    if (e.name !== "NotFoundError") systemLine("Could not open the USB device: " + e.message);
+    try { if (device && device.opened) await device.close(); } catch (e2) {}
+    return;
+  }
+  S.port = device;
+  S.usb = { device, epIn, epOut };
+  S.writer = { write: bytes => device.transferOut(epOut, bytes), releaseLock() {} };
+  S.rxLength = 0;
+  systemLine(`Dongle connected over USB (${device.productName || "USB device"})`);
+  updateHeader();
+  usbReadLoop(device, epIn);
+}
+
+async function usbReadLoop(device, epIn) {
+  while (S.port === device) {
+    try {
+      const result = await device.transferIn(epIn, 16384);
+      if (result.status === "stall") { await device.clearHalt("in", epIn); continue; }
+      if (result.data && result.data.byteLength) feed(new Uint8Array(result.data.buffer, result.data.byteOffset, result.data.byteLength));
+    } catch (e) {
+      if (S.port === device) systemLine("USB read error: " + e.message);
+      break;
+    }
+  }
+  if (S.port === device) disconnectDongle();
 }
 
 function feed(chunk) {
@@ -1358,6 +1427,8 @@ function renderRobotSelect() {
 function updateHeader() {
   const d = S.dongle, r = S.robot;
   $("connect").textContent = S.port ? "Disconnect" : "Connect";
+  $("connect").disabled = !("serial" in navigator) && !S.port;
+  $("usb").hidden = !USB_BUTTON || !!S.port;
   $("dongleDot").className = "dot" + (S.port ? (d ? " good" : " warn") : "");
   $("dongleText").textContent = !S.port ? "No dongle" : !d ? "Dongle: waiting..." : `Dongle: ch ${d.channel}`;
 
@@ -1512,11 +1583,20 @@ window.addEventListener("beforeunload", e => {
   if (S.rec || S.recordings.some(r => !r.saved)) { e.preventDefault(); e.returnValue = ""; }
 });
 
+// Phones get a USB button that uses WebUSB instead of Web Serial. Chrome for
+// Android only lists USB serial ports on some phones; WebUSB works wherever
+// the phone can act as a USB host (an OTG-capable port and a data cable).
+const USB_BUTTON = "usb" in navigator && (/Android/i.test(navigator.userAgent) || !("serial" in navigator));
+$("usb").addEventListener("click", connectUsb);
 if ("serial" in navigator) {
   navigator.serial.addEventListener("disconnect", e => { if (e.target === S.port) disconnectDongle(); });
+} else if (USB_BUTTON) {
+  showBanner("This browser has no Web Serial, so use the <b>USB</b> button: it talks to the dongle over USB directly. Plug the dongle in with a cable that carries data.");
 } else {
   showBanner("This browser doesn't support Web Serial, so it can't talk to the dongle. Open this page in <b>Chrome</b> or <b>Edge</b> on a computer. You can still open CSV files here.");
-  $("connect").disabled = true;
+}
+if ("usb" in navigator) {
+  navigator.usb.addEventListener("disconnect", e => { if (S.usb && e.device === S.usb.device) disconnectDongle(); });
 }
 
 // Theme: auto, light, dark

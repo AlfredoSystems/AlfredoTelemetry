@@ -29,6 +29,8 @@ void loop() {
 
 The viewer is a single local page with no install and no internet needed; uPlot sits next to it in the same folder.
 
+**On an Android phone**, plug the dongle into the phone's USB-C port with a cable that carries data (a USB-C-to-C charging cable may be power-only) and use the page's **USB** button, which talks to the dongle over WebUSB. Chrome for Android's own serial port list only works on some phones; the USB button doesn't depend on it. iPhones can't use USB devices from a browser.
+
 ## Robot API
 
 | Call | What it does |
