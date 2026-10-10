@@ -605,16 +605,24 @@ async function connectUsb() {
   usbReadLoop(device, epIn);
 }
 
+// Several reads stay queued at once, like an OS serial driver does, so the
+// dongle always has a transfer to fill. With one read at a time, every short
+// packet ends the transfer and the dongle stalls (and drops bytes) while the
+// page turns around. Transfers on one endpoint complete in order.
 async function usbReadLoop(device, epIn) {
+  const inFlight = [];
+  const queueRead = () => inFlight.push(device.transferIn(epIn, 16384).catch(e => ({ error: e })));
+  for (let i = 0; i < 6; i++) queueRead();
   while (S.port === device) {
-    try {
-      const result = await device.transferIn(epIn, 16384);
-      if (result.status === "stall") { await device.clearHalt("in", epIn); continue; }
-      if (result.data && result.data.byteLength) feed(new Uint8Array(result.data.buffer, result.data.byteOffset, result.data.byteLength));
-    } catch (e) {
-      if (S.port === device) systemLine("USB read error: " + e.message);
+    const result = await inFlight.shift();
+    if (S.port !== device) break;
+    if (result.error) {
+      systemLine("USB read error: " + result.error.message);
       break;
     }
+    queueRead();
+    if (result.status === "stall") { try { await device.clearHalt("in", epIn); } catch (e) {} continue; }
+    if (result.data && result.data.byteLength) feed(new Uint8Array(result.data.buffer, result.data.byteOffset, result.data.byteLength));
   }
   if (S.port === device) disconnectDongle();
 }
