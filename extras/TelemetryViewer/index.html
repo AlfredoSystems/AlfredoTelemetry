@@ -209,6 +209,7 @@ kbd { font: 11px ui-monospace, Consolas, monospace; border: 1px solid var(--bord
           <option value="30">30 s</option>
           <option value="60">60 s</option>
           <option value="120">120 s</option>
+          <option value="240">240 s</option>
         </select>
         <button id="pause">Pause</button>
         <button id="clear" title="Clear the live buffer">Clear</button>
@@ -217,7 +218,7 @@ kbd { font: 11px ui-monospace, Consolas, monospace; border: 1px solid var(--bord
     <div class="field">
       <span class="lbl">Files</span>
       <div class="row">
-        <button id="saveBuffer" title="Save the last 2 minutes of live data as CSV">Save buffer</button>
+        <button id="saveBuffer" title="Save the last 4 minutes of live data as CSV">Save buffer</button>
         <button id="openCsv">Open CSV</button>
         <input type="file" id="csvFile" accept=".csv,text/csv" hidden>
       </div>
@@ -300,7 +301,7 @@ const SER_PONG = 0x01, SER_CONNECT = 0x02, SER_STREAM = 0x03, SER_FORWARD = 0x04
 const DONGLE_IDLE = 0, DONGLE_CONNECTING = 1, DONGLE_LINKED = 2, DONGLE_BUSY = 3;
 const HELLO_PAIRED = 0x01, CONNECT_TAKEOVER = 0x01;
 
-const LIVE_BUFFER_S = 120;     // seconds of live data kept for plotting and "Save buffer"
+const LIVE_BUFFER_S = 240;     // seconds of live data kept for plotting and "Save buffer" (the longest view)
 // Link quality, measured by the page and sampled into the data tables 4 times
 // a second, so it plots and records like a robot channel.
 const LINK_CHANNELS = {
@@ -402,6 +403,7 @@ class Table {
     this.n = 0;
     this.cap = 1024;
     this.t = new Float64Array(this.cap);
+    this.gap = new Uint8Array(this.cap);  // 1: packets were lost between the previous row and this one
     this.cols = new Map();
     this.types = new Map();
     this.skipped = 0;
@@ -420,6 +422,9 @@ class Table {
     const t = new Float64Array(cap);
     t.set(this.t.subarray(0, this.n));
     this.t = t;
+    const g = new Uint8Array(cap);
+    g.set(this.gap.subarray(0, this.n));
+    this.gap = g;
     for (const c of this.cols.values()) {
       const d = new Float64Array(cap).fill(NaN);
       d.set(c.data.subarray(0, this.n));
@@ -434,6 +439,7 @@ class Table {
     if (n === 0 || t > this.t[n - 1]) {
       if (n >= this.cap) this.grow();
       this.t[n] = t;
+      this.gap[n] = 0;
       return this.n++;
     }
     const limit = Math.max(0, n - 512);
@@ -445,6 +451,8 @@ class Table {
     const at = k + 1;
     this.t.copyWithin(at + 1, at, n);
     this.t[at] = t;
+    this.gap.copyWithin(at + 1, at, n);
+    this.gap[at] = 0;
     for (const c of this.cols.values()) { c.data.copyWithin(at + 1, at, n); c.data[at] = NaN; }
     this.n++;
     return at;
@@ -454,10 +462,13 @@ class Table {
     if (k <= 0) return;
     const n = this.n;
     this.t.copyWithin(0, k, n);
+    this.gap.copyWithin(0, k, n);
+    this.gap.fill(0, n - k, n);
     for (const c of this.cols.values()) { c.data.copyWithin(0, k, n); c.data.fill(NaN, n - k, n); }
     this.n = n - k;
   }
-  clear() { this.n = 0; for (const c of this.cols.values()) c.data.fill(NaN); }
+  markGap(row) { if (row >= 0 && row < this.n) this.gap[row] = 1; }
+  clear() { this.n = 0; this.gap.fill(0); for (const c of this.cols.values()) c.data.fill(NaN); }
   get start() { return this.n ? this.t[0] : 0; }
   get end() { return this.n ? this.t[this.n - 1] : 0; }
   get bytes() { return this.cap * 8 * (this.cols.size + 1); }
@@ -768,6 +779,7 @@ function adoptRobot(mac, name) {
   S.lastRobotMac = mac;
   store("lastRobotMac", mac);
   S.robot = { mac, name, status: null, seq: null, rssi: null, lastPacket: 0, pairedAt: performance.now() };
+  S.lossPending = false;
   S.schema = [];
   S.schemaPending = null;
   S.tunables = [];
@@ -805,7 +817,7 @@ function handleRobotPacket(p) {
   const r = S.robot;
   if (r.seq !== null) {
     const gap = (seq - r.seq - 1) & 0xFFFF;
-    if (gap > 0 && gap < 1000) S.stats.lost += gap;   // bigger jumps are a robot reset
+    if (gap > 0 && gap < 1000) { S.stats.lost += gap; S.lossPending = true; }  // bigger jumps are a robot reset
   }
   r.seq = seq;
   r.rssi = rssi;
@@ -881,6 +893,12 @@ function handleData(b, v) {
     const t = mapTime(raw);
     const rowL = live.row(t);
     const rowR = rec ? rec.row(t) : -1;
+    if (S.lossPending) {
+      // Data is missing before this frame: plots break the line here
+      live.markGap(rowL);
+      if (rec) rec.markGap(rowR);
+      S.lossPending = false;
+    }
     for (let i = 0; i < n; i++, p += 5) {
       const ch = schema[b[p]];
       if (!ch) { unknown = true; continue; }
@@ -1183,7 +1201,8 @@ function buildPlot(plot) {
     series: [
       { label: "time (s)", value: (u, v) => v == null ? "—" : v.toFixed(3) },
       ...plot.channels.map(name => ({
-        label: displayName(name), stroke: colorFor(name), width: 1.5, spanGaps: true, points: { show: false },
+        label: displayName(name), stroke: colorFor(name), width: 1.5, spanGaps: false, points: { show: false },
+        gaps: (u, sidx, i0, i1, nullGaps) => lineBreaks(plot, u, sidx, nullGaps),
         value: (u, v) => v == null ? "—" : formatValue(v),
       })),
     ],
@@ -1226,14 +1245,82 @@ function togglePause() {
   S.viewDirty = true;
 }
 
+// Decides where a series' line breaks. uPlot hands over every run of missing
+// values (as canvas x ranges); a run is only a real hole if it's much longer
+// than the channel's usual spacing, since a slow channel is simply absent from
+// most rows. On top of that, the line breaks wherever a packet was lost.
+function lineBreaks(plot, u, sidx, nullGaps) {
+  const interval = (plot.intervals && plot.intervals[sidx - 1]) || 0;
+  const threshold = Math.max(interval * 4, 0.002);
+  const keep = [];
+  for (const g of nullGaps) {
+    if (u.posToVal(g[1], "x", true) - u.posToVal(g[0], "x", true) > threshold) keep.push(g);
+  }
+  const xs = u.data[0];
+  for (const m of plot.marks || []) {
+    if (m <= 0 || m >= xs.length) continue;
+    let x0 = u.valToPos(xs[m - 1], "x", true), x1 = u.valToPos(xs[m], "x", true);
+    if (x1 - x0 < 2) { const mid = (x0 + x1) / 2; x0 = mid - 1; x1 = mid + 1; }  // keep a lost packet visible
+    keep.push([x0, x1]);
+  }
+  return keep;
+}
+
+// A channel's usual spacing between samples, in seconds: from its live rate
+// when it has one, otherwise the median spacing in its recent data (cached).
+function typicalInterval(table, name) {
+  if (table === S.live) {
+    const cs = S.channelStats.get(name);
+    if (cs && cs.hz > 0) return 1 / cs.hz;
+  }
+  if (!table.intervals) table.intervals = new Map();
+  const cached = table.intervals.get(name);
+  if (cached && (table !== S.live || performance.now() - cached.at < 2000)) return cached.v;
+  const d = table.cols.get(name)?.data;
+  const dts = [];
+  let last = -1;
+  if (d) {
+    for (let i = Math.max(0, table.n - 20000); i < table.n && dts.length < 4096; i++) {
+      if (d[i] !== d[i]) continue;
+      if (last >= 0) dts.push(table.t[i] - table.t[last]);
+      last = i;
+    }
+  }
+  dts.sort((a, b) => a - b);
+  if (dts.length === 0) return Infinity;  // too little data to call anything a hole
+  const v = dts[dts.length >> 1];
+  table.intervals.set(name, { v, at: performance.now() });
+  return v;
+}
+
+// Longest time between two rows that still counts as continuous data. Longer
+// than this and nothing arrived at all (the stream was stopped, the robot's
+// buffer overflowed, or a saved file has a hole), so the line breaks there.
+function rowGapThreshold(table) {
+  const cached = table.rowGap;
+  if (cached && (table !== S.live || performance.now() - cached.at < 2000)) return cached.v;
+  const dts = [];
+  for (let i = Math.max(1, table.n - 4096); i < table.n; i++) dts.push(table.t[i] - table.t[i - 1]);
+  if (dts.length < 8) return Infinity;
+  dts.sort((a, b) => a - b);
+  const v = Math.max(10 * dts[dts.length >> 1], 0.05);
+  table.rowGap = { v, at: performance.now() };
+  return v;
+}
+
 // Builds uPlot data for the visible range. Long ranges are reduced to a min
-// and a max per pixel column, which keeps every spike visible.
+// and a max per pixel column, which keeps every spike visible. The result also
+// carries .marks (x indices preceded by a packet loss) and .intervals (each
+// channel's usual sample spacing) for lineBreaks().
 function sliceData(table, names, range, maxPoints) {
   const t = table.t, n = table.n;
   const i0 = Math.max(0, lowerBound(t, range[0], n) - 1);
   const i1 = Math.min(n, lowerBound(t, range[1], n) + 1);
   const cols = names.map(name => table.cols.get(name)?.data);
   const count = Math.max(0, i1 - i0);
+  const intervals = names.map(name => typicalInterval(table, name));
+  const rowGap = rowGapThreshold(table);
+  const marks = [];
   if (count <= maxPoints) {
     const xs = Array.from(t.subarray(i0, i1));
     const ys = cols.map(d => {
@@ -1241,7 +1328,11 @@ function sliceData(table, names, range, maxPoints) {
       for (let j = 0; j < count; j++) { const v = d ? d[i0 + j] : NaN; out[j] = v === v ? v : null; }
       return out;
     });
-    return [xs, ...ys];
+    for (let j = 1; j < count; j++) if (table.gap[i0 + j] || t[i0 + j] - t[i0 + j - 1] > rowGap) marks.push(j);
+    const data = [xs, ...ys];
+    data.marks = marks;
+    data.intervals = intervals;
+    return data;
   }
   const buckets = Math.floor(maxPoints / 2);
   const xs = new Array(buckets * 2);
@@ -1250,6 +1341,7 @@ function sliceData(table, names, range, maxPoints) {
     const s = i0 + Math.floor(count * k / buckets), e = i0 + Math.floor(count * (k + 1) / buckets);
     xs[2 * k] = t[s];
     xs[2 * k + 1] = t[e - 1];
+    for (let j = Math.max(s, 1); j < e; j++) if (table.gap[j] || t[j] - t[j - 1] > rowGap) { marks.push(2 * k); break; }
     for (let c = 0; c < cols.length; c++) {
       const d = cols[c];
       if (!d) continue;
@@ -1265,7 +1357,10 @@ function sliceData(table, names, range, maxPoints) {
       ys[c][2 * k + 1] = first ? max : min;
     }
   }
-  return [xs, ...ys];
+  const data = [xs, ...ys];
+  data.marks = marks;
+  data.intervals = intervals;
+  return data;
 }
 
 S.renderRange = [0, 10];
@@ -1282,7 +1377,10 @@ function renderLoop(now) {
   S.renderRange = currentRange();
   for (const plot of S.plots) {
     if (!plot.u) continue;
-    plot.u.setData(sliceData(table, plot.channels, S.renderRange, Math.max(400, plot.u.width * 2)));
+    const data = sliceData(table, plot.channels, S.renderRange, Math.max(400, plot.u.width * 2));
+    plot.marks = data.marks;
+    plot.intervals = data.intervals;
+    plot.u.setData(data);
   }
 }
 

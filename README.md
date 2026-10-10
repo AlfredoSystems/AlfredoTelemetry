@@ -67,10 +67,10 @@ Limits: 64 channels, 32 tunables, 31-character names, and 120-character console 
 
 ## Viewer
 
-- **Plots.** Plots come from your robot's channels, and the layout is saved per robot name. Click a plot to select it, then click channels in the Channels list to add or remove them, or use each plot's **+ channel** menu. Drag across a plot to zoom, which pauses the live view. Double-click to go back. Long ranges are drawn min/max per pixel, so spikes never disappear. Each plot's **+ link** menu adds the link quality the page measures (signal in dBm, packets per second, data rate, packet loss), sampled 4 times a second; these record and export like any other channel.
+- **Plots.** Plots come from your robot's channels, and the layout is saved per robot name. Click a plot to select it, then click channels in the Channels list to add or remove them, or use each plot's **+ channel** menu. Drag across a plot to zoom, which pauses the live view. Double-click to go back. Long ranges are drawn min/max per pixel, so spikes never disappear. Lines are never drawn across missing data: they break where a packet was lost, where a channel has a hole much longer than its usual spacing, and where nothing arrived at all (a Stop/Start pause, or frames the robot had to drop). Each plot's **+ link** menu adds the link quality the page measures (signal in dBm, packets per second, data rate, packet loss), sampled 4 times a second; these record and export like any other channel.
 - **Start / Stop** (Space) turns streaming on and off on the robot itself, which frees the radio when you don't need data.
 - **Record** (R) captures everything the robot sends until you stop it. Recordings show up in the Recordings panel, where **Save** downloads a CSV and **View** opens one to zoom through.
-- **Save buffer** saves the last 2 minutes of live data, for when something interesting happens and you weren't recording.
+- **Save buffer** saves the last 4 minutes of live data, for when something interesting happens and you weren't recording.
 - **Open CSV** loads a saved file back in for review.
 - **Pause** (P) freezes the live view while data keeps arriving.
 - **The Tunables panel** edits `Telemetry.tune()` variables. Press Enter to send; the value turns back to normal once the robot confirms it.
