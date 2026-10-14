@@ -14,6 +14,11 @@
 //
 // All of the radio work happens in a background task on core 0, so add()
 // only copies a value into a buffer and never waits on the radio.
+//
+// The link works like UDP, not TCP: every packet is sent once, in order, and
+// one the dongle doesn't get is a hole in the data that the page shows. The
+// robot never resends, never queues a backlog, and never changes its bitrate
+// on its own, so a bad patch of radio costs exactly the data from that patch.
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -92,25 +97,16 @@ class AlfredoTelemetry : public Print {
         // dongle can't decode the robot's data at all. Pairing still uses
         // normal 1 Mbps frames, so it works at normal range; the data link
         // then reaches farther. setRadioRate(WIFI_PHY_RATE_LORA_500K) doubles
-        // the speed for a little less range. Data packets are limited to
-        // 250 bytes in this mode.
+        // the speed for a little less range.
         void setLongRange(bool on = true);
-
-        // Reliability. All on by default; see README "Reliability".
-        // A data packet the dongle didn't acknowledge is sent again, up to this
-        // many times, with a short growing pause between tries (default 3).
-        void setRetries(uint8_t retries);
-        // When the dongle's heartbeats stop (out of range, interference), the
-        // robot keeps recording for this long and sends the backlog when the
-        // link comes back, so a dropout becomes a delay instead of a gap
-        // (default 30 s). The buffer size bounds how much it can hold.
-        void setDropoutGrace(float seconds);
-        // When sends keep failing, step the bitrate down (12 -> 6 -> 2 -> 1 Mbps,
-        // or LR 500 -> 250 kbps) and back up again once the link is clean.
-        void setAdaptiveRate(bool on = true);
-        uint32_t getRetransmits() { return _retransmits; }
-        // Size of the buffer that absorbs radio hiccups. Call before begin().
-        // Default 16384 bytes, about 150 ms of 20 channels at 1 kHz.
+        // Size of a data packet over the air, default 250 bytes. Short packets
+        // get through fades, interference, and BLE's share of the radio far
+        // more often than long ones; raise this (up to 1470 on ESP-IDF 5.4+)
+        // only when you need the throughput on a clean link.
+        void setPacketSize(size_t bytes);
+        // Size of the buffer between add() and the radio, default 16 KB. It
+        // only rides out radio jitter: when it's full, the oldest frames are
+        // dropped so what's sent is always fresh. Call before begin().
         void setBufferSize(size_t bytes);
 
         // True while a dongle (with the viewer page open) is paired.
@@ -137,6 +133,8 @@ class AlfredoTelemetry : public Print {
     private:
         // How the telemetry task reads a watched or tuned variable
         enum Kind : uint8_t { K_F32, K_F64, K_I8, K_I16, K_I32, K_I64, K_U8, K_U16, K_U32, K_U64, K_BOOL };
+
+        static const size_t MAX_FRAME_SIZE = 5 + 5 * atlm::MAX_CHANNELS;  // u32 time, u8 count, count x (u8 id, u32 value)
 
         template <typename T>
         static constexpr uint8_t typeOf() {
@@ -201,9 +199,7 @@ class AlfredoTelemetry : public Print {
         void updateLink(uint32_t now);
         void setPeer(const uint8_t *mac);
         void applyRadioRate();
-        void buildLadder();
-        void noteDataResult(bool firstTryOk);
-        bool flushPacket();
+        void flushPacket();
         void discardFrames();
         void applyProtocol();
         void sampleWatches();
@@ -213,28 +209,20 @@ class AlfredoTelemetry : public Print {
         void sendTunables();
         void sendText();
         void sendData();
-        bool radioSend(const uint8_t *mac, uint8_t type, const uint8_t *payload, size_t length, uint8_t retries = 0,
-                       bool *firstTryOk = nullptr);
+        bool radioSend(const uint8_t *mac, uint8_t type, const uint8_t *payload, size_t length);
         uint32_t readVariable(const volatile void *variable, uint8_t kind);
         void writeVariable(volatile void *variable, uint8_t kind, uint8_t type, uint32_t bits);
 
         // Settings
         char _name[atlm::MAX_NAME_LENGTH + 1] = "";
         uint8_t _wifiChannel = 1;
-        wifi_phy_rate_t _radioRate = WIFI_PHY_RATE_12M;  // configured
-        wifi_phy_rate_t _activeRate = WIFI_PHY_RATE_12M;  // in use, after adaptive steps
-        wifi_phy_rate_t _ladder[4] = {WIFI_PHY_RATE_12M};
-        uint8_t _ladderCount = 1;
-        uint8_t _rateIndex = 0;
-        uint16_t _firstTryCount = 0, _firstTryFails = 0, _cleanStreak = 0;
+        wifi_phy_rate_t _radioRate = WIFI_PHY_RATE_12M;
         wifi_power_t _txPower = WIFI_POWER_11dBm;
         bool _longRange = false;
         esp_err_t _protocolError = ESP_OK;
         esp_err_t _rateError = ESP_OK;
-        size_t _bufferSize = 0;  // 0 = automatic: 1 MB in PSRAM when the board has it, else 16 KB
-        uint8_t _retries = 3;
-        uint32_t _graceMs = 30000;
-        bool _adaptive = true;
+        size_t _bufferSize = 16384;
+        size_t _packetSize = atlm::V1_PAYLOAD;
         uint32_t _minFrameUs = 1000;
         uint32_t _watchPeriodUs = 10000;
 
@@ -243,10 +231,6 @@ class AlfredoTelemetry : public Print {
         volatile bool _connected = false;
         volatile bool _streaming = false;
         volatile bool _streamRequested = false;
-        volatile uint32_t _retransmits = 0;
-        bool _linkLost = false;  // heartbeats stopped while streaming; still recording for the grace period
-        uint32_t _linkLostMs = 0;
-        uint32_t _nextProbeMs = 0;
         volatile uint16_t _schemaVersion = 0;
         volatile uint16_t _tunablesVersion = 0;
         volatile uint32_t _framesSent = 0;
@@ -287,7 +271,7 @@ class AlfredoTelemetry : public Print {
         // Owned by the telemetry task
         uint8_t _dongleMac[6] = {0};
         bool _hasPeer = false;
-        uint16_t _payloadSize = atlm::V1_PAYLOAD;
+        uint16_t _payloadSize = atlm::V1_PAYLOAD;  // agreed with the dongle on CONNECT
         uint16_t _seq = 0;
         uint16_t _helloSeq = 0;
         uint32_t _lastHeardMs = 0;
@@ -297,10 +281,10 @@ class AlfredoTelemetry : public Print {
         uint32_t _nextWatchUs = 0;
         uint16_t _schemaSent = 0xFFFF;
         bool _tunablesRequested = false;
-        uint8_t _packet[atlm::MAX_PAYLOAD];
+        uint8_t _packet[atlm::MAX_PAYLOAD];  // the DATA packet being built
         size_t _packetLength = 0;
         uint32_t _packetStartMs = 0;
-        uint8_t *_carryItem = nullptr;  // frame being copied into packets, with values left over
+        uint8_t _carry[MAX_FRAME_SIZE];  // the frame being copied into packets, with values left over
         const uint8_t *_carryValues = nullptr;
         uint8_t _carryLeft = 0;
         uint8_t _tx[atlm::MAX_PAYLOAD];

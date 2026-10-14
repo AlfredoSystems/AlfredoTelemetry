@@ -19,6 +19,7 @@ void setup() {
 
   Telemetry.setMaxRate(1000);                // frames per second (the default)
   Telemetry.setRadioRate(WIFI_PHY_RATE_24M); // more headroom than the default 12 Mbps
+  Telemetry.setPacketSize(1470);             // big packets for throughput; the default 250 is more robust
   Telemetry.setBufferSize(32768);
   Telemetry.begin("HighRate");
   pinMode(0, INPUT_PULLUP);

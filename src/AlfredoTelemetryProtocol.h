@@ -24,7 +24,9 @@ const int MAX_PAYLOAD = ESP_NOW_MAX_DATA_LEN;     // ESP-NOW v1: 250 bytes
 #endif
 const int V1_PAYLOAD = 250;
 
-// Every radio packet starts with this header.
+// Every radio packet starts with this header. Packets are sent once and
+// never resent, like UDP: seq counts every one the sender transmits, so the
+// host can tell a lost packet (a gap) from a stale one (not newer).
 struct __attribute__((packed)) PacketHeader {
     uint8_t magic;
     uint8_t type;
@@ -40,8 +42,8 @@ struct __attribute__((packed)) PacketHeader {
 //         u16 schema version, u16 tunables version, u32 uptime ms,
 //         u32 frames sent, u32 frames dropped, u32 tx failures,
 //         u8 streaming, u8 buffer use %, u16 payload size,
-//         u8 channel count, u8 tunable count, u32 retransmits,
-//         u8 active radio rate (wifi_phy_rate_t), u8 flags (bit 0: rate stepped down),
+//         u8 channel count, u8 tunable count, u32 reserved (0),
+//         u8 radio rate (wifi_phy_rate_t), u8 reserved (0),
 //         u8 name length, name
 // SCHEMA  u16 schema version, u8 channel count,
 //         then per channel: u8 id, u8 type, u8 name length, name

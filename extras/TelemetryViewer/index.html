@@ -726,8 +726,7 @@ function handleSeen(p) {
   if (!known || known.name !== name || known.paired !== paired || known.pairedWith !== pairedWith) renderRobotSelect();
 
   // Our robot announcing itself unpaired means the dongle re-pairs on its
-  // own. Don't touch the clock or schema here: the robot may be recording
-  // through a dropout and will send that backlog with its old timestamps.
+  // own. Don't touch the clock or schema here: a dropout isn't a reboot.
   // A real reboot shows up as an uptime drop in its STATUS.
   if (S.robot && S.robot.mac === mac) S.robot.name = name;
   autoPair();
@@ -814,10 +813,16 @@ function handleRobotPacket(p) {
   const body = pkt.subarray(4);
   const v = new DataView(body.buffer, body.byteOffset, body.byteLength);
 
+  // The robot numbers every packet it sends and never resends one, so the
+  // numbers only ever go up. A packet that isn't newer than the last is a
+  // duplicate or a stale delivery and is dropped whole; a jump is loss. A
+  // jump backwards by more than a few packets is a robot reset (its numbers
+  // start over), which its STATUS also reports as an uptime drop.
   const r = S.robot;
   if (r.seq !== null) {
-    const gap = (seq - r.seq - 1) & 0xFFFF;
-    if (gap > 0 && gap < 1000) { S.stats.lost += gap; S.lossPending = true; }  // bigger jumps are a robot reset
+    const ahead = (seq - r.seq) & 0xFFFF;
+    if (ahead === 0 || ahead > 0xFFFF - 64) return;
+    if (ahead > 1 && ahead < 1000) { S.stats.lost += ahead - 1; S.lossPending = true; }
   }
   r.seq = seq;
   r.rssi = rssi;
@@ -839,11 +844,11 @@ function handleStatus(b, v) {
     schemaVersion: v.getUint16(0, true), tunablesVersion: v.getUint16(2, true), uptimeMs: v.getUint32(4, true),
     framesSent: v.getUint32(8, true), framesDropped: v.getUint32(12, true), txFailures: v.getUint32(16, true),
     streaming: b[20] !== 0, bufferUse: b[21], payload: v.getUint16(22, true),
-    channels: b[24], tunables: b[25], retransmits: v.getUint32(26, true), rate: b[30], steppedDown: (b[31] & 1) !== 0,
+    channels: b[24], tunables: b[25], rate: b[30],
     name: decoder.decode(b.subarray(33, 33 + b[32])),
   };
   const r = S.robot;
-  if (r.status && s.uptimeMs < r.status.uptimeMs) S.clock.reset = true;  // rebooted
+  if (r.status && s.uptimeMs < r.status.uptimeMs) { S.clock.reset = true; r.seq = null; }  // rebooted
   if (s.name && s.name !== r.name) {
     const wasUnnamed = !r.name;
     r.name = s.name;
@@ -923,7 +928,10 @@ function handleData(b, v) {
 }
 
 // Turns the robot's 32-bit microsecond clock into seconds on one continuous
-// axis, across wraparound (every 71 minutes) and robot resets.
+// axis, across wraparound (every 71 minutes) and robot resets. Only a reset
+// (an uptime drop in STATUS, or a new pairing) moves the axis; a timestamp
+// behind the newest one is just placed where it belongs, or skipped by the
+// table if it's too old to matter.
 function mapTime(raw) {
   const c = S.clock;
   if (c.refRaw === null || c.reset) {
@@ -933,7 +941,6 @@ function mapTime(raw) {
     c.reset = false;
   }
   const d = (raw - c.refRaw) | 0;
-  if (d < -5e6 || d > 900e6) { c.reset = true; return mapTime(raw); }  // 15 min: longer than any dropout backlog
   const us = c.refUs + d;
   if (d > 0) { c.refRaw = raw; c.refUs = us; }
   if (c.lastUs === null || us > c.lastUs) { c.lastUs = us; c.lastHostMs = performance.now(); }
@@ -1574,10 +1581,9 @@ function updateStats() {
     ["Robot: frames dropped", st ? st.framesDropped.toLocaleString() : "—"],
     ["Robot: buffer use", st ? st.bufferUse + " %" : "—"],
     ["Robot: send failures", st ? st.txFailures.toLocaleString() : "—"],
-    ["Robot: retransmits", st ? st.retransmits.toLocaleString() : "—"],
     ["Robot: uptime", st ? formatDuration(st.uptimeMs / 1000) : "—"],
     ["Robot: packet size", st ? st.payload + " B" : "—"],
-    ["Robot: radio rate", d && d.phy ? d.phy + (st && st.steppedDown ? " (stepped down)" : "") : "—"],
+    ["Robot: radio rate", d && d.phy ? d.phy : "—"],
     ["Dongle: packets heard", d && d.heard != null ? d.heard.toLocaleString() : "—"],
     ["Dongle: dropped", d ? d.rxDropped.toLocaleString() : "—"],
     ["Serial errors", s.crcErrors.toLocaleString()],

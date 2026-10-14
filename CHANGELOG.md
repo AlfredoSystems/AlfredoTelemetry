@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+The link now works like UDP: every packet is sent once, in order, and a lost one is a hole the page shows, never a delay or a replay.
+
+### Changed
+- The robot waits for the Wi-Fi driver's verdict on each packet instead of a 50 ms guess, and never resends. The old retry loop could keep re-sending one packet for seconds (the dongle received it up to ten times) while the buffer filled and threw away everything new.
+- Data packets default to 250 bytes; `Telemetry.setPacketSize()` raises that for throughput on a clean link.
+- The frame buffer defaults to 16 KB and drops its oldest frames when full, so what's sent is always fresh.
+- Streaming stops when the dongle's heartbeats stop, and resumes when they're back.
+- The viewer drops any packet that isn't newer than the last one (duplicates and stale deliveries), and only moves its time axis on a robot reboot, never on a timestamp that goes backwards.
+
+### Removed
+- `setRetries()`, `setDropoutGrace()`, `setAdaptiveRate()`, `getRetransmits()`, recording through dropouts, the backlog replay, the adaptive rate ladder, and the Link panel's retransmit count.
+
 ## 1.0 - 2026-09-29
 
 First release.

@@ -273,8 +273,8 @@ void AlfredoTelemetryDongle::update() {
             lastRobotMs = 0;
         }
     }
-    // No page, but the robot is still sending to us (it missed the release,
-    // or it's finishing a backlog): keep telling it to stop.
+    // No page, but the robot is still sending to us (it missed the release):
+    // keep telling it to stop.
     if (!hostAlive && _state != DONGLE_IDLE && lastRobotMs != 0 && now - lastRobotMs < LINK_TIMEOUT_MS && now - _lastReleaseMs >= 1000) {
         _lastReleaseMs = now;
         radioSend(PKT_DISCONNECT, nullptr, 0);

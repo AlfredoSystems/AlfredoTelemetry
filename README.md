@@ -47,10 +47,8 @@ The viewer is a single local page with no install and no internet needed; uPlot 
 | `Telemetry.setLongRange()` | Espressif's Long Range mode: several dB more sensitivity than 1 Mbps, at 250 kbps. See [Long range mode](#long-range-mode). |
 | `Telemetry.setTxPower(power)` | Wi-Fi transmit power, e.g. `WIFI_POWER_11dBm` (the default). See [Transmit power](#transmit-power). The dongle has `TelemetryDongle.setTxPower()`, called before `begin()`. |
 | `Telemetry.printStatus(Serial)` | Prints one line of link diagnostics over USB: whether telemetry started, the MAC address, the Wi-Fi channel and transmit power the radio is really using, HELLOs sent, pairing, and send failures. |
-| `Telemetry.setRetries(n)` | Resend a data packet the dongle didn't acknowledge up to n times (default 3). See [Reliability](#reliability). |
-| `Telemetry.setDropoutGrace(seconds)` | Keep recording this long after the dongle's heartbeats stop, and send the backlog when the link returns (default 30 s). |
-| `Telemetry.setAdaptiveRate(on)` | Step the bitrate down when sends keep failing and back up when the link is clean (default on). |
-| `Telemetry.setBufferSize(bytes)` | Buffer between `add()` and the radio. Call before `begin()`. Default: 1 MB in PSRAM when the build enables it, otherwise 64 KB (about 10 s of the IMU example), or 16 KB on boards short of RAM. |
+| `Telemetry.setPacketSize(bytes)` | Size of a data packet over the air (default 250). Short packets get through a rough link far more often; raise it (up to 1470 on ESP-IDF 5.4+) only for throughput on a clean link. See [Reliability](#reliability). |
+| `Telemetry.setBufferSize(bytes)` | Buffer between `add()` and the radio (default 16 KB). It only rides out radio jitter: when it's full, the oldest frames are dropped so what's sent is always fresh. Call before `begin()`. |
 | `Telemetry.isConnected()` / `isStreaming()` | True while the page is paired, and while it has streaming on. |
 | `Telemetry.getFramesSent()` / `getFramesDropped()` | Frames queued, and frames lost because the buffer was full. |
 
@@ -60,7 +58,7 @@ When the page isn't streaming, `add()` returns straight away, so leaving telemet
 
 - **`add()` never waits on the radio.** It copies the value into a frame under a short spinlock, and once per frame hands the frame to a ring buffer without waiting. Looking up a channel by name usually takes a single string compare, because loops add their channels in the same order every pass.
 - **All radio work runs in one task on core 0**, where Wi-Fi and BLE already run. `loop()`, NoU3's IMU tasks, and PestoLink stay on core 1. The ESP32-S2 has only one core, so there everything shares core 0.
-- **A full buffer drops frames instead of blocking.** `getFramesDropped()` and the viewer's Link panel show when that happens.
+- **A full buffer drops its oldest frames instead of blocking.** `getFramesDropped()` and the viewer's Link panel show when that happens.
 - **Call `add()` and `send()` from one task.** Use `watch()` for variables owned by other tasks.
 
 Limits: 64 channels, 32 tunables, 31-character names, and 120-character console lines.
@@ -100,13 +98,11 @@ TelemetryDongle.setTxPower(WIFI_POWER_19_5dBm);  // dongle, before begin()
 
 ## Reliability
 
-Three things turn a weak moment in the link into a delay instead of a hole in the data. All are on by default.
+The link works like UDP, not TCP. Every packet is sent once, in order, and numbered; the dongle's radio acknowledges it or doesn't (the Wi-Fi driver's own fast retries, a few within milliseconds, happen inside that one send). A packet that doesn't get through is a hole in the data, which the page shows as a break in the line and counts as packet loss. The robot never resends a packet, never queues a backlog to send later, and never changes its bitrate on its own. A bad patch of radio costs exactly the data from that patch, the time axis stays true, and the robot can't get stuck re-sending old data while new data piles up and is thrown away.
 
-- **Retries.** The dongle's radio acknowledges every data packet. One that isn't acknowledged is sent again, up to 3 times, with a short growing pause between tries (the driver's own fast retries happen first). At 60% loss per attempt, three retries bring it to about 13%. The Link panel shows the robot's retransmit count.
-- **Recording through dropouts.** If the dongle's heartbeats stop (out of range, behind a wall, a burst of interference), the robot keeps queueing frames for 30 s instead of stopping, probes the radio every 250 ms, and sends the backlog, in order, when the link comes back. The page's time axis stays continuous. The buffer defaults to 64 KB, about 10 s of the IMU example, or 1 MB (about 2.5 minutes) when the build enables PSRAM. The NoU3 board definition doesn't enable PSRAM, so it gets 64 KB; `setBufferSize()` can raise it as far as free RAM allows. `printStatus()` shows the size in use. Closing the page or clicking Unpair still stops the robot at once.
-- **Adaptive rate.** When more than 6 of the last 20 packets fail on the first try, the robot steps its bitrate down (12 → 6 → 2 → 1 Mbps, or LR 500 → 250 kbps), and after 300 clean packets in a row steps back up. The Link panel's **Robot: radio rate** shows the rate the dongle actually receives, with "(stepped down)" while that's in effect.
+What makes a packet get through is being short: the default 250-byte packet is about 0.2 ms of airtime at 12 Mbps, which fits between BLE's turns on the radio and through the fades of a spinning or moving robot. `setPacketSize()` can raise it for throughput on a clean link. If packets are still lost, the page's **Packet loss** and the robot's **send failures** (Link panel, `printStatus()`) say so, and the fixes are physical: get the dongle up and away from the laptop (a USB extension cable is often worth several dB), use a quiet channel (the ChannelSurvey example picks one), send fewer bytes (`setMaxRate()`, fewer channels), lower the bitrate or use [Long range mode](#long-range-mode) when the data rate allows, and raise the transmit power on boards whose RF handles it. Test with the robot doing what it does in a match (motors running, BLE controller connected); a link that's clean on the bench can be a poor one there.
 
-Beyond software: get the dongle up and away from the laptop (a USB extension cable is often worth several dB), use a quiet channel (the ChannelSurvey example picks one), lower the bitrate or use [Long range mode](#long-range-mode) when the data rate allows, and raise the transmit power on boards whose RF handles it.
+If the dongle's heartbeats stop for 1.5 s, the robot stops streaming; it resumes as soon as they're back. Closing the page or clicking Unpair stops it at once.
 
 ## Long range mode
 
@@ -131,7 +127,7 @@ Measured between two NoU3s on the ESP32 Arduino core 3.3.10: the IMU example str
 
 ## Requirements
 
-- ESP32 Arduino core 3.0 or newer (tested with 3.3.10). On 3.3+ (ESP-IDF 5.5), packets carry up to 1470 bytes with ESP-NOW v2; older cores use 250-byte packets, and the robot and dongle agree on the size automatically.
+- ESP32 Arduino core 3.0 or newer (tested with 3.3.10). On 3.3+ (ESP-IDF 5.5), `setPacketSize()` can go up to 1470 bytes with ESP-NOW v2; older cores are limited to 250, and the robot and dongle agree on the size automatically.
 - Chrome or Edge on the computer running the viewer.
 
 The wire format is documented in `src/AlfredoTelemetryProtocol.h`.
